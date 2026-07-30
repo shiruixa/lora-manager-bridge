@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LoRA Manager Bridge</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1 class="title">🔗 LoRA Manager Bridge</h1>
+      <p class="subtitle">CivitAI ↔ ComfyUI LoRA Manager</p>
+    </header>
+
+    <section class="status-section">
+      <div class="status-row">
+        <span class="status-label">ComfyUI 状态</span>
+        <span id="server-status" class="status-value status--checking">检查中...</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">库中模型总数</span>
+        <span id="lora-count" class="status-value">--</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">LoRA / Checkpoint</span>
+        <span id="type-count" class="status-value">--</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">当前页面</span>
+        <span id="current-page" class="status-value status-page">--</span>
+      </div>
+    </section>
+
+    <section class="actions">
+      <button id="btn-refresh" class="btn btn-primary">🔄 刷新当前页面</button>
+      <button id="btn-options" class="btn btn-secondary">⚙️ 设置</button>
+    </section>
+
+    <footer class="footer">
+      <small>ComfyUI 地址可在设置中配置</small>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,150 @@
+/**
+ * LoRA Manager Bridge - Content Styles
+ *
+ * Detail/version pages: inline badge + collapsible version list.
+ * List pages: card badges and overlays.
+ */
+
+/* ── Inline badge (detail/version page) ─────────────────────────────── */
+
+.lb-inline-badge {
+  display: inline-block;
+  padding: 5px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.lb-inline-owned {
+  background: rgba(39, 174, 96, 0.12);
+  color: #27ae60;
+  border: 1px solid rgba(39, 174, 96, 0.25);
+}
+
+.lb-inline-partial {
+  background: rgba(243, 156, 18, 0.1);
+  color: #e67e22;
+  border: 1px solid rgba(243, 156, 18, 0.25);
+}
+
+.lb-inline-none {
+  background: rgba(160, 174, 192, 0.08);
+  color: #718096;
+  border: 1px solid rgba(160, 174, 192, 0.15);
+}
+
+.lb-inline-loading {
+  background: rgba(160, 174, 192, 0.06);
+  color: #a0aec0;
+  border: 1px dashed rgba(160, 174, 192, 0.3);
+}
+
+.lb-inline-error {
+  background: rgba(231, 76, 60, 0.1);
+  color: #e74c3c;
+  border: 1px solid rgba(231, 76, 60, 0.2);
+  font-size: 12px;
+}
+
+.lb-badge-extra {
+  font-weight: 400;
+  font-size: 11px;
+  opacity: 0.7;
+  margin-left: 4px;
+}
+
+/* ── Version list (detail page) ─────────────────────────────────────── */
+
+.lb-versions {
+  margin: 6px 0 12px;
+}
+
+.lb-details {
+  background: rgba(39, 174, 96, 0.04);
+  border: 1px solid rgba(39, 174, 96, 0.15);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  max-width: 560px;
+}
+
+.lb-details summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #27ae60;
+  user-select: none;
+}
+
+.lb-vlist {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lb-vlist li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+.lb-vlist li:last-child { border-bottom: none; }
+
+.lb-vmatch { background: rgba(39,174,96,0.06); margin: 0 -14px; padding-left: 14px !important; padding-right: 14px !important; border-radius: 4px; }
+
+.lb-vtype {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 3px;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+
+.lb-vtype--lora       { background: rgba(52,211,153,0.15); color: #34d399; }
+.lb-vtype--checkpoint { background: rgba(96,165,250,0.15); color: #60a5fa; }
+
+.lb-vname {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'SF Mono','Fira Code','Consolas',monospace;
+  font-size: 11px;
+  color: #d4d4d8;
+}
+
+.lb-vbase {
+  font-size: 10px;
+  color: #71717a;
+  background: rgba(255,255,255,0.04);
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.lb-vcur {
+  font-size: 10px;
+  color: #fbbf24;
+  flex-shrink: 0;
+}
+
+/* ── Card markers (list page) ───────────────────────────────────────── */
+
+.lb-card-owned {
+  outline: 2px solid rgba(39, 174, 96, 0.35) !important;
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+
+.lb-card-badge, .lb-card-ovl {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.4;
+}

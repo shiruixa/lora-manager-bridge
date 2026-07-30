@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LoRA Manager Bridge - 设置</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1>⚙️ LoRA Manager Bridge 设置</h1>
+      <p>配置 ComfyUI 服务器连接和扩展行为</p>
+    </header>
+
+    <form id="settings-form" class="form">
+      <!-- Server Connection -->
+      <section class="section">
+        <h2 class="section-title">服务器连接</h2>
+
+        <div class="form-group">
+          <label for="comfyUIHost">ComfyUI 地址</label>
+          <input
+            type="text"
+            id="comfyUIHost"
+            name="comfyUIHost"
+            placeholder="http://127.0.0.1:8188"
+            spellcheck="false"
+          />
+          <p class="form-hint">ComfyUI 服务器的地址和端口。通常是 http://127.0.0.1:8188</p>
+        </div>
+
+        <div class="form-group">
+          <button type="button" id="btn-test" class="btn btn-outline">
+            🔍 测试连接
+          </button>
+          <span id="test-result" class="test-result"></span>
+        </div>
+      </section>
+
+      <!-- Proxy Settings -->
+      <section class="section">
+        <h2 class="section-title">网络代理</h2>
+
+        <div class="form-group">
+          <label for="proxyUrl">代理地址 (可选)</label>
+          <input
+            type="text"
+            id="proxyUrl"
+            name="proxyUrl"
+            placeholder="留空使用系统代理，如 http://127.0.0.1:7897"
+            spellcheck="false"
+          />
+          <p class="form-hint">用于访问 CivitAI 的代理地址。扩展请求 localhost 的 ComfyUI 不经过代理。如果浏览器已配置系统代理，无需额外设置。</p>
+        </div>
+      </section>
+
+      <!-- Cache Settings -->
+      <section class="section">
+        <h2 class="section-title">缓存</h2>
+
+        <div class="form-group">
+          <label for="cacheTTLMs">缓存时间 (毫秒)</label>
+          <input
+            type="number"
+            id="cacheTTLMs"
+            name="cacheTTLMs"
+            min="1000"
+            max="300000"
+            step="1000"
+          />
+          <p class="form-hint">API 结果缓存时长，默认 30000 (30秒)。较大的值可减少 API 调用但数据可能不够实时。</p>
+        </div>
+      </section>
+
+      <!-- Buttons -->
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">💾 保存设置</button>
+        <button type="button" id="btn-clear-cache" class="btn btn-outline">
+          🗑️ 清除缓存
+        </button>
+      </div>
+    </form>
+
+    <footer class="footer">
+      <p>LoRA Manager Bridge v1.0.0</p>
+      <p><small>在 Edge/Chrome 中加载此扩展: 访问 <code>edge://extensions</code>，启用"开发人员模式"，点击"加载解压缩的扩展"。</small></p>
+    </footer>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
