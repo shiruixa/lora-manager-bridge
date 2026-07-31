@@ -3,8 +3,8 @@
   "name": "LoRA Manager Bridge",
   "version": "1.0.0",
   "description": "在 CivitAI 页面上标记已在 ComfyUI LoRA Manager 库中的模型",
-  "author": "LoRA Manager Bridge",
-  "minimum_edge_version": "120.0.0.0",
+  "author": "shiruixa",
+  "homepage_url": "https://github.com/shiruixa/lora-manager-bridge",
 
   "icons": {
     "16": "icons/icon-16.png",
