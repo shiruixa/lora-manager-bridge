@@ -1,6 +1,6 @@
 # LoRA Manager Bridge
 
-在 CivitAI 浏览模型时，自动标记哪些模型已经在你的本地 ComfyUI LoRA Manager 库中。
+浏览 CivitAI / CivArchive 时，自动标记哪些模型已经在你的本地 ComfyUI LoRA Manager 库中。
 
 支持 LoRA 和 Checkpoint 两种模型类型。
 
@@ -11,6 +11,17 @@
 - **版本列表** — 可展开查看所有已下载版本，当前版本高亮标记
 - **列表页** — 模型卡片右上角绿色 ✅ 角标
 - **懒加载** — 滚动加载新卡片时自动扫描
+- **多站点支持** — civitai.com、civitai.red、civitaiarchive.com
+
+## 支持的站点
+
+| 站点 | 页面 | 功能 |
+|------|------|------|
+| [civitai.com](https://civitai.com) | 模型列表、搜索、详情页 | ✅ 标记 + 详情徽章 |
+| [civitai.red](https://civitai.red) | 同上（CivitAI 镜像） | ✅ 标记 + 详情徽章 |
+| [civitaiarchive.com](https://civitaiarchive.com) | 模型列表、用户主页、详情页 | ✅ 标记 + 详情徽章 |
+
+CivArchive 是 CivitAI 的存档镜像站，复用同一套模型/版本 ID 体系，因此标记逻辑完全通用。
 
 ## 安装
 
@@ -24,7 +35,7 @@
 
 - Edge 120+ 或 Chrome 120+
 - ComfyUI 已安装 [LoRA Manager](https://github.com/willmiao/ComfyUI-Lora-Manager) 插件
-- ComfyUI 服务器正在运行
+- ComfyUI 服务器正在运行（默认 `http://127.0.0.1:8188`，可在设置中修改）
 
 ## 开发
 
@@ -32,10 +43,15 @@
 lora-manager-edge-extension/
 ├── manifest.json          # Manifest V3
 ├── background.js          # Service Worker
-├── content-script.js      # 页面注入脚本
+├── content-script.js      # 页面注入脚本（含 CivArchive DOM 适配）
 ├── content-style.css      # 注入样式
 ├── popup.html/js/css      # 工具栏弹窗
 └── options.html/js/css    # 设置页面
 ```
 
 纯 JavaScript，无构建步骤。修改后到扩展管理页面点"重新加载"即可生效。
+
+## 版本历史
+
+- **v1.1.0** — 支持 CivArchive（civitaiarchive.com）
+- **v1.0.0** — 初代发布：详情页标记、版本切换、列表页批量标记、LoRA+Checkpoint 双查
