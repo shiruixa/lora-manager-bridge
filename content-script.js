@@ -33,6 +33,10 @@
     });
   }
 
+  // CivArchive is a CivitAI mirror using the SAME model/version ID system.
+  // Only the DOM differs (Tailwind classes instead of Mantine/CSS Modules).
+  const IS_ARCHIVE = () => location.hostname.includes('civitaiarchive');
+
   function ctx() {
     const p = location.pathname, q = location.search;
     const m = p.match(/^\/models\/(\d+)/);
@@ -42,6 +46,12 @@
     }
     const v = p.match(/^\/model-versions\/(\d+)/);
     if (v) return { type: 'version', modelId: null, versionId: +v[1], href: location.href };
+    // CivArchive: /users/{name} is a model grid (user's page). CivitAI: /search/models etc.
+    if (IS_ARCHIVE()) {
+      if (/^\/users\//.test(p) || p === '/' || p === '/models') {
+        return { type: 'list', modelId: null, versionId: null, href: location.href };
+      }
+    }
     if (p === '/models' || p === '/search/models' || p === '/' || p === '/search' || p.startsWith('/models?'))
       return { type: 'list', modelId: null, versionId: null, href: location.href };
     return { type: 'other', modelId: null, versionId: null, href: location.href };
@@ -53,13 +63,21 @@
 
   function titleAnchor() {
     return new Promise((r) => {
-      const sel = () => document.querySelector('.mantine-Title-root') || document.querySelector('h1');
+      // CivArchive detail page: title is <div class="tracking-tight text-3xl font-bold">
+      const sel = () => {
+        if (IS_ARCHIVE()) {
+          const t = document.querySelector('.tracking-tight.text-3xl.font-bold')
+                 || document.querySelector('h1');
+          return t;
+        }
+        return document.querySelector('.mantine-Title-root') || document.querySelector('h1');
+      };
       const e = sel();
-      if (e) return r(e.closest('[class*="Stack"], [class*="Group"]') || e.parentElement);
+      if (e) return r(e.closest('[class*="Stack"], [class*="Group"], [class*="flex items-center"]') || e.parentElement);
       let t = 0;
       const iv = setInterval(() => {
         const e = sel();
-        if (e) { clearInterval(iv); r(e.closest('[class*="Stack"], [class*="Group"]') || e.parentElement); }
+        if (e) { clearInterval(iv); r(e.closest('[class*="Stack"], [class*="Group"], [class*="flex items-center"]') || e.parentElement); }
         if (++t > 50) { clearInterval(iv); r(null); }
       }, 200);
     });
@@ -169,6 +187,12 @@
   // ═══════════════════════════════════════════════════════════════════
 
   function findCardLinks() {
+    // CivArchive: <a class="block group relative rounded-lg ... shadow-lg border ...">
+    // The <a> element IS the card — no need to walk up to a container.
+    if (IS_ARCHIVE()) {
+      return Array.from(document.querySelectorAll('a[href*="/models/"][class*="shadow-lg"]'))
+        .filter((a) => /\/models\/\d+/.test(a.getAttribute('href') || '') && a.offsetWidth >= 60);
+    }
     const all = document.querySelectorAll('a[href*="/models/"][class*="linkOrClick"]');
     const out = [];
     for (const a of all) {
@@ -180,6 +204,8 @@
   }
 
   function cardFrame(link) {
+    // CivArchive: <a> itself is the card
+    if (IS_ARCHIVE()) return link;
     for (let p = link.parentElement; p && p !== document.body; p = p.parentElement) {
       const c = (p.className || '') + ' ' + (p.getAttribute('class') || '');
       if (c.includes('rounded') && c.includes('shadow') && c.includes('flex-col')) return p;
@@ -190,6 +216,7 @@
   }
 
   function cardModelId(frame) {
+    // CivArchive: frame is the <a>, CivitAI: <a class="linkOrClick"> inside frame
     const a = frame.tagName === 'A' ? frame : frame.querySelector('a[class*="linkOrClick"]');
     if (!a) return null;
     const m = (a.getAttribute('href') || '').match(/\/models\/(\d+)/);

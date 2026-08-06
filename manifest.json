@@ -29,7 +29,8 @@
     {
       "matches": [
         "https://civitai.com/*",
-        "https://civitai.red/*"
+        "https://civitai.red/*",
+        "https://civitaiarchive.com/*"
       ],
       "js": ["content-script.js"],
       "css": ["content-style.css"],
