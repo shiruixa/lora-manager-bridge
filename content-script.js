@@ -358,8 +358,8 @@
   // ═══════════════════════════════════════════════════════════════════
 
   I('loaded');
-  lastUrl = location.href;
-  lastDetailHref = location.href;
+  lastUrl = '';
+  lastDetailHref = '';
   handlePage();
   poll();
   setTimeout(() => { if (ctx().type === 'list') scanNewCards(); }, 2000);
