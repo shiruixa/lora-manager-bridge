@@ -74,11 +74,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (summary && summary.connected) {
       countEl.textContent = `${summary.total != null ? summary.total : 0} 个`;
-      // Every tracked type, so the parts always add up to the total.
+      // Every tracked library, in a stable order, so the parts always add up to
+      // the total. Libraries the server doesn't have simply are not present.
       const c = summary.counts || {};
-      const parts = [c.lora, c.checkpoint, c.embedding]
-        .filter((n) => n != null)
-        .map((n) => String(n));
+      const parts = ['lora', 'checkpoint', 'embedding', 'other']
+        .filter((k) => c[k] != null)
+        .map((k) => String(c[k]));
       typeCountEl.textContent = parts.length ? parts.join(' / ') : '--';
     } else {
       countEl.textContent = '不可用';

@@ -1,31 +1,26 @@
 {
   "manifest_version": 3,
   "name": "LoRA Manager Bridge",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "在 CivitAI 页面上标记已在 ComfyUI LoRA Manager 库中的模型",
   "author": "shiruixa",
   "homepage_url": "https://github.com/shiruixa/lora-manager-bridge",
-
   "icons": {
     "16": "icons/icon-16.png",
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
-
   "permissions": [
     "storage",
     "activeTab"
   ],
-
   "host_permissions": [
     "http://127.0.0.1:*/*",
     "http://localhost:*/*"
   ],
-
   "background": {
     "service_worker": "background.js"
   },
-
   "content_scripts": [
     {
       "matches": [
@@ -33,12 +28,15 @@
         "https://civitai.red/*",
         "https://civitaiarchive.com/*"
       ],
-      "js": ["content-script.js"],
-      "css": ["content-style.css"],
+      "js": [
+        "content-script.js"
+      ],
+      "css": [
+        "content-style.css"
+      ],
       "run_at": "document_idle"
     }
   ],
-
   "action": {
     "default_popup": "popup.html",
     "default_title": "LoRA Manager Bridge",
@@ -48,7 +46,6 @@
       "128": "icons/icon-128.png"
     }
   },
-
   "options_ui": {
     "page": "options.html",
     "open_in_tab": true

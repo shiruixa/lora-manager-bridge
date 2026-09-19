@@ -109,6 +109,7 @@
 .lb-vtype--lora       { background: rgba(52,211,153,0.15); color: #34d399; }
 .lb-vtype--checkpoint { background: rgba(96,165,250,0.15); color: #60a5fa; }
 .lb-vtype--embedding  { background: rgba(196,181,253,0.15); color: #c4b5fd; }
+.lb-vtype--other      { background: rgba(244,114,182,0.15); color: #f472b6; }
 
 .lb-vname {
   flex: 1;

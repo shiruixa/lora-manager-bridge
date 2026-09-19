@@ -33,8 +33,27 @@
   // Native tooltips don't render newlines — join version rows with a separator.
   const tooltip = (vs) => vs.map((v) => '[' + v.modelType + '] ' + v.fileName).join(' · ');
 
-  // Short label per model type, used on list-page card badges.
-  const TYPE_ABBR = { lora: 'LoRA', checkpoint: 'CKPT', embedding: 'EMB' };
+  // Badge labels. LoRA Manager reports a precise sub-type, so variants get
+  // named as themselves rather than lumped in with their parent library:
+  // lora/locon/dora, checkpoint/diffusion_model, embedding, vae/upscaler/
+  // text_encoder. Library names are the fallback when no sub-type came back.
+  const TYPE_ABBR = {
+    // sub-types
+    lora: 'LoRA',
+    locon: 'LoCon',
+    dora: 'DoRA',
+    checkpoint: 'CKPT',
+    diffusion_model: 'UNET',
+    embedding: 'EMB',
+    vae: 'VAE',
+    upscaler: 'UPSC',
+    text_encoder: 'TXT',
+    // library names (fallback)
+    loras: 'LoRA',
+    checkpoints: 'CKPT',
+    embeddings: 'EMB',
+    other: '其它',
+  };
   const abbrOf = (types) => (types || []).map((t) => TYPE_ABBR[t] || String(t).toUpperCase()).join('/');
 
   // ── Clipboard + toast ────────────────────────────────────────────────
@@ -278,8 +297,11 @@
       listEl.innerHTML = '<details class="lb-details"><summary>📂 已下载的版本 (' + versions.length + ' · ' + types.join(' + ') + ')</summary><ul class="lb-vlist">' + versions.map((v) => {
         const isM = matched && v.versionId === matched.versionId;
         const copy = v.filePath || v.fileName || '';
+        // Show the precise sub-type (LoCon / DoRA / UNET / VAE…), falling back
+        // to the library it lives in.
+        const token = v.subType || v.modelType || 'lora';
         return '<li class="' + (isM ? 'lb-vmatch' : '') + '" data-lb-copy="' + escAttr(copy) + '" title="点击复制本地路径">' +
-          '<span class="lb-vtype lb-vtype--' + (v.modelType || 'lora') + '">' + ((v.modelType || 'L').toUpperCase().slice(0,4)) + '</span>' +
+          '<span class="lb-vtype lb-vtype--' + (v.modelType || 'lora') + '">' + esc(abbrOf([token])) + '</span>' +
           '<span class="lb-vname">' + esc(v.fileName || v.name) + '</span>' +
           (v.baseModel ? '<span class="lb-vbase">' + esc(v.baseModel) + '</span>' : '') +
           (isM ? '<span class="lb-vcur">★ 当前</span>' : '') + '</li>';

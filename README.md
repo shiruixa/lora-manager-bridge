@@ -4,7 +4,18 @@
 
 ![列表页标记效果](docs/images/list-badges.jpg)
 
-支持 **LoRA**、**Checkpoint**、**Embedding**（Textual Inversion）三类模型，覆盖 civitai.com、civitai.red、civitaiarchive.com。
+覆盖 civitai.com、civitai.red、civitaiarchive.com。
+
+**支持的模型类型**（含各类变体，徽章会显示具体变体名）：
+
+| 库 | 包含类型 | 徽章 |
+|---|---|---|
+| `loras` | LoRA、**LoCon**、**DoRA** | `LoRA` / `LoCon` / `DoRA` |
+| `checkpoints` | Checkpoint、**UNET / diffusion_model** | `CKPT` / `UNET` |
+| `embeddings` | Textual Inversion | `EMB` |
+| `other` | **VAE**、**Upscaler**、**Text Encoder** | `VAE` / `UPSC` / `TXT` |
+
+前两个库的变体（LoCon / DoRA / UNET）本就在同一目录树下；第四类（VAE / Upscaler / Text Encoder）是 LoRA Manager 独立的一类库，`other` 库不存在于旧版本时扩展会自动跳过、不做无谓请求。
 
 ---
 
@@ -134,6 +145,7 @@ lora-manager-edge-extension/
 
 ## 版本历史
 
+- **v1.3.0** — 补上 LoRA Manager 的第四类库 `other`（VAE / Upscaler / Text Encoder）；徽章改用 `sub_type` 显示具体变体名（LoCon / DoRA / UNET / VAE…）；旧版本无 `other` 库时自动跳过并按需重新探测
 - **v1.2.0** — 新增：Embedding（Textual Inversion）标记；一键下载到库（走 GET 接口避开 ComfyUI 的 Origin 校验，零配置可用；落对应模型根目录，子目录遵循 LoRA Manager 自己的模板设置）；卡片徽章悬停浮层与点击复制本地路径；工具栏弹窗重做（显示本页标记情况、一键打开 LoRA Manager、API Key 状态检测）
 - **v1.1.1** — Bug 修复与优化：ComfyUI 离线时正确提示「未连接」（此前误报「不在库中」）；批量请求失败后自动重试（此前卡片永久漏标）；并发上限真正生效；弹窗刷新改为就地重扫（不重载页面）；深/浅主题适配
 - **v1.1.0** — 支持 CivArchive（civitaiarchive.com）

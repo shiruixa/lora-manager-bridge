@@ -37,12 +37,26 @@ const PAGE_SIZE = 100;
 // Max simultaneous requests to the local server.
 const MAX_CONCURRENT_REQUESTS = 6;
 
-// Model types to check for the "in library" status
+// The libraries LoRA Manager files models into. Each is scanned separately, so
+// a model can only be found by querying the library it lives in:
+//   loras       — lora, locon, dora            (the LoRA variants)
+//   checkpoints — checkpoint, diffusion_model  (covers the unet/diffusion_models roots)
+//   embeddings  — embedding
+//   other       — vae, upscaler, text_encoder  (added in LoRA Manager ~1.2)
 const MODEL_ENDPOINTS = [
   { type: 'lora',       endpoint: '/api/lm/loras/list',       label: 'LoRA' },
   { type: 'checkpoint', endpoint: '/api/lm/checkpoints/list', label: 'Checkpoint' },
   { type: 'embedding',  endpoint: '/api/lm/embeddings/list',  label: 'Embedding' },
+  { type: 'other',      endpoint: '/api/lm/other/list',       label: 'Other' },
 ];
+
+// Endpoints the server has answered 404 for. Older LoRA Manager builds predate
+// the `other` library, and probing it once per card per scan would be a pile of
+// wasted requests. Cleared on CLEAR_CACHE so an upgrade gets picked up.
+const unsupportedEndpoints = new Set();
+
+const activeEndpoints = () =>
+  MODEL_ENDPOINTS.filter((e) => !unsupportedEndpoints.has(e.endpoint));
 
 // ============================================================================
 // Configuration
@@ -156,7 +170,16 @@ async function queryEndpoint(endpoint, params = {}, options = {}) {
       return data;
     })
     .catch((error) => {
-      console.debug('[LoraBridge] API request failed:', endpoint, error.message);
+      // A 404 on a model library means this build of LoRA Manager does not have
+      // it — remember that instead of re-probing it for every card.
+      if (error.message === 'HTTP 404' && MODEL_ENDPOINTS.some((e) => e.endpoint === endpoint)) {
+        if (!unsupportedEndpoints.has(endpoint)) {
+          console.debug('[LoraBridge] library unavailable, skipping:', endpoint);
+        }
+        unsupportedEndpoints.add(endpoint);
+      } else {
+        console.debug('[LoraBridge] API request failed:', endpoint, error.message);
+      }
       throw error;
     })
     .finally(() => {
@@ -421,6 +444,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Clears cached API results only — deliberately not the download map, so an
     // in-flight transfer keeps its completion/error tracking.
     cache.clear();
+    // Re-probe libraries that 404'd, so upgrading LoRA Manager is picked up
+    // without restarting the browser.
+    unsupportedEndpoints.clear();
     // Responded synchronously, so do NOT return true — that would tell the
     // sender to keep the channel open for a reply that never comes, and the
     // worker being torn down then surfaces as
@@ -447,7 +473,7 @@ async function queryAllEndpoints({ modelId }) {
   }
 
   const settled = await Promise.all(
-    MODEL_ENDPOINTS.map(async ({ type, endpoint, label }) => {
+    activeEndpoints().map(async ({ type, endpoint, label }) => {
       try {
         const data = await queryEndpoint(endpoint, {
           civitai_model_id: modelId,
@@ -468,8 +494,12 @@ async function queryAllEndpoints({ modelId }) {
     if (result.ok) ok = true;
     if (result.items.length === 0) continue;
 
-    foundTypes.push(result.label);
+    if (!foundTypes.includes(result.type)) foundTypes.push(result.type);
     for (const item of result.items) {
+      // LoRA Manager reports the precise sub-type — locon, dora,
+      // diffusion_model, vae, upscaler… — which is what the badge shows.
+      const subType = String(item.sub_type || '').toLowerCase() || null;
+      if (subType && !foundTypes.includes(subType)) foundTypes.push(subType);
       allVersions.push({
         versionId: item.civitai?.id || null,
         modelId: item.civitai?.modelId || modelId || null,
@@ -481,6 +511,7 @@ async function queryAllEndpoints({ modelId }) {
         filePath: item.file_path || '',
         baseModel: item.base_model || '',
         modelType: result.type,
+        subType,
         sha256: item.sha256 || '',
       });
     }
@@ -572,7 +603,7 @@ async function handleCheckModelsBatch({ modelIds }) {
   // runWithConcurrency actually controls how many are in flight at once.
   const tasks = [];
   for (const modelId of unique) {
-    for (const { endpoint, label } of MODEL_ENDPOINTS) {
+    for (const { type, endpoint } of activeEndpoints()) {
       tasks.push(async () => {
         try {
           const data = await queryEndpoint(endpoint, {
@@ -586,9 +617,21 @@ async function handleCheckModelsBatch({ modelIds }) {
           if (items.length > 0) {
             results[modelId].found = true;
             results[modelId].versionCount += items.length;
-            if (!results[modelId].foundTypes.includes(label)) {
-              results[modelId].foundTypes.push(label);
+
+            // Badge tokens: the precise sub-type when the server reports one
+            // (locon, dora, diffusion_model, vae, upscaler…), else the library.
+            const tokens = [type];
+            for (const item of items) {
+              const sub = String(item.sub_type || '').toLowerCase();
+              if (sub && !tokens.includes(sub)) tokens.push(sub);
             }
+            for (const t of tokens) {
+              if (results[modelId].foundTypes.length < 3 &&
+                  !results[modelId].foundTypes.includes(t)) {
+                results[modelId].foundTypes.push(t);
+              }
+            }
+
             // A few file names for the hover popover — names only, never paths.
             for (const item of items) {
               if (results[modelId].names.length >= 3) break;
@@ -640,10 +683,10 @@ async function runWithConcurrency(tasks, limit) {
  */
 async function handleGetLibrarySummary() {
   try {
-    // Built from MODEL_ENDPOINTS so adding a model type can't leave the
+    // Built from the active libraries so adding a model type can't leave the
     // per-type counts silently out of step with `total` again.
     const settled = await Promise.all(
-      MODEL_ENDPOINTS.map(async ({ type, endpoint }) => {
+      activeEndpoints().map(async ({ type, endpoint }) => {
         try {
           const data = await queryEndpoint(endpoint, { page_size: 1 });
           return [type, data?.total ?? 0];
