@@ -17,6 +17,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   const testResult = document.getElementById('test-result');
   const btnClearCache = document.getElementById('btn-clear-cache');
 
+  // ── Version footer (kept in sync with manifest.json) ───────────────────
+
+  document.getElementById('app-version').textContent =
+    chrome.runtime.getManifest().version;
+
   // ── Load current config ────────────────────────────────────────────────
 
   let config = { ...DEFAULT_CONFIG };

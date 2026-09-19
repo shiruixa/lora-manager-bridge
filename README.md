@@ -53,5 +53,6 @@ lora-manager-edge-extension/
 
 ## 版本历史
 
+- **v1.1.1** — Bug 修复与优化：ComfyUI 离线时正确提示「未连接」（此前误报「不在库中」）；批量请求失败后自动重试（此前卡片永久漏标）；并发上限真正生效；弹窗刷新改为就地重扫（不重载页面）；深/浅主题适配
 - **v1.1.0** — 支持 CivArchive（civitaiarchive.com）
 - **v1.0.0** — 初代发布：详情页标记、版本切换、列表页批量标记、LoRA+Checkpoint 双查

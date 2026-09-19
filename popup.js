@@ -83,16 +83,40 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // ── Button handlers ────────────────────────────────────────────────────
 
+  /**
+   * Send a message to the tab's content script.
+   * Resolves null when nothing is listening there.
+   */
+  function sendToTab(tabId, message) {
+    return new Promise((resolve) => {
+      try {
+        chrome.tabs.sendMessage(tabId, message, (response) => {
+          resolve(chrome.runtime.lastError ? null : (response ?? null));
+        });
+      } catch (e) {
+        resolve(null);
+      }
+    });
+  }
+
   document.getElementById('btn-refresh').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-refresh');
+    btn.disabled = true;
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tab) {
+      if (!tab) return;
+
+      // Ask the content script to re-check in place. Falls back to a reload
+      // when it isn't there (non-CivitAI page, or injected before an update).
+      const res = await sendToTab(tab.id, { type: 'RESCAN' });
+      if (!res || !res.ok) {
         await chrome.tabs.reload(tab.id);
       }
     } catch (e) {
-      console.error('[LoraBridge] Failed to reload tab:', e);
+      console.error('[LoraBridge] Failed to refresh tab:', e);
+    } finally {
+      window.close();
     }
-    window.close();
   });
 
   document.getElementById('btn-options').addEventListener('click', () => {

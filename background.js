@@ -14,9 +14,28 @@ const DEFAULT_CONFIG = {
   cacheTTLMs: 30000,
 };
 
-// In-memory LRU cache: key → { data, timestamp }
+// In-memory cache: key → { data, timestamp }
 const cache = new Map();
 const MAX_CACHE_SIZE = 300;
+
+// URL → in-flight promise, so identical concurrent queries share one fetch.
+const inflight = new Map();
+
+// Entries older than this are dropped regardless of the configured TTL, so a
+// cache never grows unboundedly stale. The configured TTL may exceed it.
+const MIN_CACHE_AGE_MS = 120000;
+
+// How long a loaded config is reused before hitting chrome.storage again.
+// Without this, every request (including cache hits) reads storage.
+const CONFIG_TTL_MS = 5000;
+
+const REQUEST_TIMEOUT_MS = 5000;
+
+// /api/lm/* caps page_size at 100 (see py/routes/handlers/model_handlers.py).
+const PAGE_SIZE = 100;
+
+// Max simultaneous requests to the local server.
+const MAX_CONCURRENT_REQUESTS = 6;
 
 // Model types to check for the "in library" status
 const MODEL_ENDPOINTS = [
@@ -24,10 +43,13 @@ const MODEL_ENDPOINTS = [
   { type: 'checkpoint', endpoint: '/api/lm/checkpoints/list', label: 'Checkpoint' },
 ];
 
-/**
- * Load configuration from storage or return defaults.
- */
-async function getConfig() {
+// ============================================================================
+// Configuration
+// ============================================================================
+
+let configMemo = null;  // { promise, timestamp }
+
+async function loadConfig() {
   try {
     const stored = await chrome.storage.sync.get('config');
     if (stored && stored.config) {
@@ -40,34 +62,67 @@ async function getConfig() {
 }
 
 /**
- * Get the base URL from config.
+ * Load configuration from storage or return defaults.
+ *
+ * Memoized for CONFIG_TTL_MS so a burst of concurrent queries shares one
+ * storage read. Concurrent callers during the first load share the same
+ * promise too. Cache TTL comes from here, so this must stay cheap.
  */
+function getConfig() {
+  const now = Date.now();
+  if (configMemo && now - configMemo.timestamp < CONFIG_TTL_MS) {
+    return configMemo.promise;
+  }
+  configMemo = { promise: loadConfig(), timestamp: now };
+  return configMemo.promise;
+}
+
+// Drop the memo as soon as the options page saves new settings.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'sync' && changes.config) {
+    configMemo = null;
+    cache.clear();
+  }
+});
+
 async function getBaseUrl() {
   const config = await getConfig();
   return config.comfyUIHost.replace(/\/+$/, '');
 }
 
+// ============================================================================
+// Caching / fetching
+// ============================================================================
+
 /**
  * Evict expired and excess cache entries.
+ *
+ * @param {number} ttlMs configured cache TTL — never evict sooner than that,
+ *                       otherwise a long TTL silently degrades to MIN_CACHE_AGE_MS.
  */
-function evictCache() {
+function evictCache(ttlMs) {
+  const maxAge = Math.max(MIN_CACHE_AGE_MS, ttlMs || 0);
   const now = Date.now();
   for (const [key, entry] of cache) {
-    if (now - entry.timestamp > 120000) {
+    if (now - entry.timestamp > maxAge) {
       cache.delete(key);
     }
   }
   while (cache.size > MAX_CACHE_SIZE) {
-    const oldestKey = cache.keys().next().value;
-    cache.delete(oldestKey);
+    cache.delete(cache.keys().next().value);
   }
 }
 
 /**
  * Query the LoRA Manager API and return results.
+ *
+ * Requests for the same URL are coalesced: scroll and MutationObserver can
+ * trigger overlapping scans, and without this they'd both hit the server
+ * because the cache is only filled once the response lands.
  */
 async function queryEndpoint(endpoint, params = {}) {
-  const baseUrl = await getBaseUrl();
+  const config = await getConfig();
+  const baseUrl = config.comfyUIHost.replace(/\/+$/, '');
   const url = new URL(`${baseUrl}${endpoint}`);
 
   for (const [key, value] of Object.entries(params)) {
@@ -77,35 +132,43 @@ async function queryEndpoint(endpoint, params = {}) {
   }
 
   const cacheKey = url.toString();
-  evictCache();
+  evictCache(config.cacheTTLMs);
 
   const cached = cache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < (await getConfig()).cacheTTLMs) {
+  if (cached && Date.now() - cached.timestamp < config.cacheTTLMs) {
     return cached.data;
   }
 
-  try {
+  const inflightRequest = inflight.get(cacheKey);
+  if (inflightRequest) return inflightRequest;
+
+  const request = (async () => {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(cacheKey, {
+        signal: controller.signal,
+        headers: { 'Accept': 'application/json' },
+      });
 
-    const response = await fetch(url.toString(), {
-      signal: controller.signal,
-      headers: { 'Accept': 'application/json' },
-    });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
 
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      cache.set(cacheKey, { data, timestamp: Date.now() });
+      return data;
+    } catch (error) {
+      console.debug('[LoraBridge] API request failed:', endpoint, error.message);
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+      inflight.delete(cacheKey);
     }
+  })();
 
-    const data = await response.json();
-    cache.set(cacheKey, { data, timestamp: Date.now() });
-    return data;
-  } catch (error) {
-    console.debug('[LoraBridge] API request failed:', endpoint, error.message);
-    throw error;
-  }
+  inflight.set(cacheKey, request);
+  return request;
 }
 
 /**
@@ -133,24 +196,42 @@ async function checkConnectivity() {
 // Message Handlers
 // ============================================================================
 
+/**
+ * Resolve a handler promise into a sendResponse call.
+ *
+ * Without the rejection branch a handler that throws leaves sendResponse
+ * uncalled, and the content script silently sees "not found".
+ */
+function respond(promise, sendResponse) {
+  promise.then(sendResponse, (error) => {
+    console.error('[LoraBridge] handler failed:', error);
+    sendResponse({
+      found: false,
+      versions: [],
+      foundTypes: [],
+      error: String((error && error.message) || error),
+    });
+  });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'CHECK_MODEL') {
-    handleCheckModel(message.payload).then(sendResponse);
+    respond(handleCheckModel(message.payload), sendResponse);
     return true;
   }
 
   if (message.type === 'CHECK_MODELS_BATCH') {
-    handleCheckModelsBatch(message.payload).then(sendResponse);
+    respond(handleCheckModelsBatch(message.payload), sendResponse);
     return true;
   }
 
   if (message.type === 'CHECK_CONNECTIVITY') {
-    checkConnectivity().then(sendResponse);
+    respond(checkConnectivity(), sendResponse);
     return true;
   }
 
   if (message.type === 'GET_LIBRARY_SUMMARY') {
-    handleGetLibrarySummary().then(sendResponse);
+    respond(handleGetLibrarySummary(), sendResponse);
     return true;
   }
 
@@ -165,44 +246,55 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 /**
  * Query all model endpoints (LoRA + Checkpoint) for a single model.
+ *
+ * Returns `ok: false` when every endpoint failed — meaning the server is
+ * unreachable, which is NOT the same as "this model is not in the library".
  */
-async function queryAllEndpoints({ modelId, versionId }) {
+async function queryAllEndpoints({ modelId }) {
+  // The API only filters by civitai_model_id (there is no version filter), so
+  // without a modelId an unfiltered query would return arbitrary library
+  // entries and the caller would misread them as "other versions of this model".
+  if (!modelId) {
+    return { allVersions: [], foundTypes: [], ok: true, needsModelId: true };
+  }
+
+  const settled = await Promise.all(
+    MODEL_ENDPOINTS.map(async ({ type, endpoint, label }) => {
+      try {
+        const data = await queryEndpoint(endpoint, {
+          civitai_model_id: modelId,
+          page_size: PAGE_SIZE,
+        });
+        return { type, label, items: data?.items || [], ok: true };
+      } catch (e) {
+        return { type, label, items: [], ok: false };
+      }
+    })
+  );
+
   const allVersions = [];
   const foundTypes = [];
+  let ok = false;
 
-  for (const { type, endpoint, label } of MODEL_ENDPOINTS) {
-    try {
-      const params = {};
-      if (modelId) {
-        params.civitai_model_id = modelId;
-      }
+  for (const result of settled) {
+    if (result.ok) ok = true;
+    if (result.items.length === 0) continue;
 
-      const data = await queryEndpoint(endpoint, {
-        ...params,
-        page_size: 50,
+    foundTypes.push(result.label);
+    for (const item of result.items) {
+      allVersions.push({
+        versionId: item.civitai?.id || null,
+        modelId: item.civitai?.modelId || modelId || null,
+        name: item.model_name || item.file_name,
+        fileName: item.file_name,
+        baseModel: item.base_model || '',
+        modelType: result.type,
+        sha256: item.sha256 || '',
       });
-
-      const items = data?.items || [];
-      if (items.length > 0) {
-        foundTypes.push(label);
-        for (const item of items) {
-          allVersions.push({
-            versionId: item.civitai?.id || null,
-            modelId: item.civitai?.modelId || modelId || null,
-            name: item.model_name || item.file_name,
-            fileName: item.file_name,
-            baseModel: item.base_model || '',
-            modelType: type,
-            sha256: item.sha256 || '',
-          });
-        }
-      }
-    } catch (e) {
-      // Silently skip failed endpoints
     }
   }
 
-  return { allVersions, foundTypes };
+  return { allVersions, foundTypes, ok, needsModelId: false };
 }
 
 /**
@@ -214,18 +306,18 @@ async function handleCheckModel({ modelId, versionId }) {
   }
 
   try {
-    const { allVersions, foundTypes } = await queryAllEndpoints({ modelId, versionId });
+    const { allVersions, foundTypes, ok, needsModelId } = await queryAllEndpoints({ modelId });
 
-    // Debug: log version IDs for matching
-    if (allVersions.length > 0) {
-      console.debug('[LoraBridge] CHECK_MODEL: modelId=' + modelId + ' lookingForVersion=' + versionId +
-        ' found=' + allVersions.length + ' versions, localIds=' +
-        JSON.stringify(allVersions.map((v) => v.versionId)));
+    if (needsModelId) {
+      return { found: false, versions: [], foundTypes: [], needsModelId: true };
     }
 
-    if (versionId && allVersions.length > 0) {
+    if (!ok) {
+      return { found: false, versions: [], foundTypes: [], unreachable: true };
+    }
+
+    if (versionId) {
       const exactVersion = allVersions.find((v) => v.versionId === versionId);
-      console.debug('[LoraBridge] CHECK_MODEL: versionMatch result=' + (!!exactVersion));
       return {
         found: exactVersion !== undefined,
         hasAnyVersion: allVersions.length > 0,
@@ -237,6 +329,7 @@ async function handleCheckModel({ modelId, versionId }) {
 
     return {
       found: allVersions.length > 0,
+      hasAnyVersion: allVersions.length > 0,
       versions: allVersions,
       matchedVersion: null,
       foundTypes,
@@ -249,17 +342,17 @@ async function handleCheckModel({ modelId, versionId }) {
 /**
  * Batch check model IDs against all endpoints (LoRA + Checkpoint).
  *
- * Strategy: For each modelId, query BOTH endpoints with civitai_model_id filter
- * in parallel. Each (endpoint, modelId) pair has a UNIQUE cache key, so scrolling
- * and loading more cards produces fresh API calls rather than hitting a stale
- * "fetch all" cache entry.
+ * Strategy: For each modelId, query BOTH endpoints with civitai_model_id filter.
+ * Each (endpoint, modelId) pair has a UNIQUE cache key, so scrolling and loading
+ * more cards produces fresh API calls rather than hitting a stale "fetch all"
+ * cache entry.
  *
- * Concurrency is capped at 6 parallel requests to avoid overwhelming the
- * local server (modelIds × 2 endpoints = 12 concurrent max).
+ * Returns `ok: false` when no request succeeded, so the caller can retry
+ * instead of permanently marking those cards as scanned.
  */
 async function handleCheckModelsBatch({ modelIds }) {
   if (!modelIds || !Array.isArray(modelIds) || modelIds.length === 0) {
-    return { results: {} };
+    return { results: {}, ok: true };
   }
 
   // Normalize and deduplicate
@@ -272,24 +365,31 @@ async function handleCheckModelsBatch({ modelIds }) {
     unique.push(n);
   }
 
-  // Initialize results
+  // Initialize results. `unknown` marks a modelId no endpoint managed to
+  // answer for — caller must retry those rather than treat them as absent.
   const results = {};
   for (const mid of unique) {
-    results[mid] = { found: false, versionCount: 0, foundTypes: [] };
+    results[mid] = { found: false, versionCount: 0, foundTypes: [], unknown: true };
   }
 
-  if (unique.length === 0) return { results };
+  if (unique.length === 0) return { results, ok: true };
 
-  // For each modelId, query BOTH endpoints → one promise per (modelId, endpoint)
+  let anySucceeded = false;
+
+  // One thunk per (modelId, endpoint). Thunks — not started promises — so
+  // runWithConcurrency actually controls how many are in flight at once.
   const tasks = [];
   for (const modelId of unique) {
-    for (const { type, endpoint, label } of MODEL_ENDPOINTS) {
-      tasks.push((async () => {
+    for (const { endpoint, label } of MODEL_ENDPOINTS) {
+      tasks.push(async () => {
         try {
           const data = await queryEndpoint(endpoint, {
             civitai_model_id: modelId,
-            page_size: 50,
+            page_size: PAGE_SIZE,
           });
+          anySucceeded = true;
+          results[modelId].unknown = false;
+
           const items = data?.items || [];
           if (items.length > 0) {
             results[modelId].found = true;
@@ -299,41 +399,40 @@ async function handleCheckModelsBatch({ modelIds }) {
             }
           }
         } catch (e) {
-          // Silently skip failed endpoints
+          // Endpoint unreachable for this modelId — it stays `unknown`, which
+          // tells the caller to retry instead of marking the card as scanned.
         }
-      })());
+      });
     }
   }
 
-  // Run with concurrency limit
-  await runWithConcurrency(tasks, 6);
+  await runWithConcurrency(tasks, MAX_CONCURRENT_REQUESTS);
 
   const foundCount = unique.filter((mid) => results[mid].found).length;
   if (foundCount > 0) {
     console.debug('[LoraBridge] batch: checked', unique.length, 'modelIds × 2 endpoints,', foundCount, 'found');
   }
 
-  return { results };
+  return { results, ok: anySucceeded };
 }
 
 /**
- * Run an array of async tasks with a concurrency limit.
+ * Run an array of async *thunks* with a concurrency limit.
+ *
+ * The tasks must be functions; passing already-started promises would let every
+ * request fire at once and the limit would only throttle the awaiting.
  */
 async function runWithConcurrency(tasks, limit) {
-  const results = [];
-  const executing = [];
-  for (const task of tasks) {
-    const p = task.then((r) => {
-      executing.splice(executing.indexOf(p), 1);
-      return r;
-    });
-    executing.push(p);
-    results.push(p);
-    if (executing.length >= limit) {
-      await Promise.race(executing);
-    }
-  }
-  await Promise.all(results);
+  const queue = tasks.slice();
+  const workerCount = Math.min(limit, queue.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (queue.length > 0) {
+        await queue.shift()();
+      }
+    })
+  );
 }
 
 /**

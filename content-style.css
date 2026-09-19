@@ -144,7 +144,61 @@
   border-radius: 8px;
 }
 
-.lb-card-badge, .lb-card-ovl {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+.lb-card-ovl,
+.lb-card-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 10;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 10px;
   line-height: 1.4;
+  pointer-events: none;
+  white-space: nowrap;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.lb-card-ovl {
+  background: rgba(0, 0, 0, 0.5);
+  color: #aaa;
+}
+
+.lb-card-badge {
+  background: #27ae60;
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+/* ── Light theme (CivitAI sets data-mantine-color-scheme on <html>) ──── */
+/* The default palette above is tuned for dark backgrounds; these overrides
+   keep the version list legible when CivitAI is switched to light. */
+
+html[data-mantine-color-scheme='light'] .lb-details {
+  background: rgba(39, 174, 96, 0.06);
+}
+
+html[data-mantine-color-scheme='light'] .lb-vlist li {
+  border-bottom-color: rgba(0, 0, 0, 0.06);
+}
+
+html[data-mantine-color-scheme='light'] .lb-vname { color: #3f3f46; }
+
+html[data-mantine-color-scheme='light'] .lb-vbase {
+  color: #52525b;
+  background: rgba(0, 0, 0, 0.05);
+}
+
+html[data-mantine-color-scheme='light'] .lb-vcur { color: #b45309; }
+
+html[data-mantine-color-scheme='light'] .lb-inline-none {
+  background: rgba(100, 116, 139, 0.08);
+  color: #475569;
+  border-color: rgba(100, 116, 139, 0.25);
+}
+
+html[data-mantine-color-scheme='light'] .lb-inline-loading {
+  color: #64748b;
+  border-color: rgba(100, 116, 139, 0.35);
 }

@@ -13,7 +13,7 @@
   const BADGE_ID = 'lb-inline-badge', LIST_ID = 'lb-version-list';
 
   // Concurrency: scanLock for list, detailReqId sequence for detail (no global processing lock)
-  let scanLock = false, detailReqId = 0;
+  let scanLock = false, detailReqId = 0, retryTimer = null;
   let lastUrl = '', lastDetailHref = '';  // track full href for detail version switches
 
   const I = (...a) => console.info(TAG, ...a);
@@ -25,11 +25,38 @@
     const l = document.getElementById(LIST_ID); if (l) l.remove();
   };
 
+  // Native tooltips don't render newlines — join version rows with a separator.
+  const tooltip = (vs) => vs.map((v) => '[' + v.modelType + '] ' + v.fileName).join(' · ');
+
+  function makeBadge(cls, text) {
+    const el = document.createElement('span');
+    el.id = BADGE_ID;
+    el.className = 'lb-inline-badge ' + cls;
+    el.textContent = text;
+    return el;
+  }
+
+  // Badges are appended after an await, by which point an SPA re-render may
+  // have replaced the original anchor with a detached node — appending there
+  // would silently show nothing. Re-acquire it, falling back to the original.
+  async function placeBadge(el, fallback) {
+    const anchor = (await titleAnchor()) || fallback;
+    anchor.appendChild(el);
+    return anchor;
+  }
+
+  // Resolves with the worker's response, or null when the message never
+  // reached it (worker asleep/errored, or extension context invalidated).
+  // Callers must treat null as "unknown", NOT as "not found".
   function send(type, payload) {
-    return new Promise((r) => {
-      chrome.runtime.sendMessage({ type, payload }, (v) => {
-        r(v && !chrome.runtime.lastError ? v : { found: false });
-      });
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ type, payload }, (v) => {
+          resolve(chrome.runtime.lastError ? null : (v ?? null));
+        });
+      } catch (e) {
+        resolve(null);
+      }
     });
   }
 
@@ -110,31 +137,33 @@
 
     // Show loading, clean old UI
     removeOldUI();
-    const loadingEl = document.createElement('span');
-    loadingEl.id = BADGE_ID;
-    loadingEl.className = 'lb-inline-badge lb-inline-loading';
-    loadingEl.textContent = '⏳ 检查库中...';
-    anchor.appendChild(loadingEl);
+    anchor.appendChild(makeBadge('lb-inline-loading', '⏳ 检查库中...'));
 
     // Query
     I('check: mid=' + modelId + ' vid=' + versionId + ' req#' + myReqId);
     const r = await send('CHECK_MODEL', { modelId, versionId });
 
-    // Stale check — clean up loading badge even if discarding
+    // Stale check. Do NOT touch the DOM here — removeOldUI() deletes by ID, so
+    // it would wipe the loading badge the newer request just inserted. That
+    // request owns the UI now.
     if (myReqId !== detailReqId) {
       I('discard req#' + myReqId + ' (latest=#' + detailReqId + ')');
-      removeOldUI();
       return;
     }
 
     removeOldUI();
 
-    if (!r || r.error) {
-      const errEl = document.createElement('span');
-      errEl.id = BADGE_ID;
-      errEl.className = 'lb-inline-badge lb-inline-error';
-      errEl.textContent = '⚠️ ComfyUI 未连接';
-      anchor.appendChild(errEl);
+    // No response, an explicit error, or every endpoint down → the server is
+    // unreachable. This is not the same as "not in the library".
+    if (!r || r.error || r.unreachable) {
+      await placeBadge(makeBadge('lb-inline-error', '⚠️ ComfyUI 未连接'), anchor);
+      return;
+    }
+
+    // Couldn't resolve modelId (the API can only filter by model id), so there
+    // is nothing to query. Say so instead of guessing.
+    if (r.needsModelId) {
+      await placeBadge(makeBadge('lb-inline-none', '❓ 无法确定模型 ID'), anchor);
       return;
     }
 
@@ -152,33 +181,25 @@
     if (matched) {
       badgeEl.className = 'lb-inline-badge lb-inline-owned';
       badgeEl.innerHTML = '✅ 此版本已下载 <span class="lb-badge-extra">' + esc(matched.fileName) + ' · ' + (matched.modelType || '') + '</span>';
-      badgeEl.title = versions.map((v) => '[' + v.modelType + '] ' + v.fileName).join('\n');
+      badgeEl.title = tooltip(versions);
     } else if (hasAny) {
       badgeEl.className = 'lb-inline-badge lb-inline-partial';
       badgeEl.textContent = '⚠️ 此版本未下载 (库中有 ' + versions.length + ' 个其他版本)';
-      badgeEl.title = versions.map((v) => '[' + v.modelType + '] ' + v.fileName).join('\n');
+      badgeEl.title = tooltip(versions);
     } else {
       badgeEl.className = 'lb-inline-badge lb-inline-none';
       badgeEl.textContent = '📥 此模型不在库中';
     }
 
-    // Re-acquire anchor — it may have been replaced by SPA re-render
-    const anchor2 = await titleAnchor();
-    if (anchor2) anchor2.appendChild(badgeEl);
-    else anchor.appendChild(badgeEl); // fallback
+    const anchor2 = await placeBadge(badgeEl, anchor);
 
-    // Version list
-    if (versions.length > 0 && anchor2) {
+    // Version list — nothing to show when the library has no version of this model.
+    if (versions.length > 0) {
       const listEl = document.createElement('div');
       listEl.id = LIST_ID;
       listEl.className = 'lb-versions';
       listEl.innerHTML = '<details class="lb-details"><summary>📂 已下载的版本 (' + versions.length + ' · ' + types.join(' + ') + ')</summary><ul class="lb-vlist">' + versions.map((v) => { const isM = matched && v.versionId === matched.versionId; return '<li class="' + (isM ? 'lb-vmatch' : '') + '"><span class="lb-vtype lb-vtype--' + (v.modelType || 'lora') + '">' + ((v.modelType || 'L').toUpperCase().slice(0,4)) + '</span><span class="lb-vname">' + esc(v.fileName || v.name) + '</span>' + (v.baseModel ? '<span class="lb-vbase">' + esc(v.baseModel) + '</span>' : '') + (isM ? '<span class="lb-vcur">★ 当前</span>' : '') + '</li>'; }).join('') + '</ul></details>';
       (anchor2.parentElement || anchor2).insertBefore(listEl, anchor2.nextSibling);
-    } else if (anchor2) {
-      const listEl = document.createElement('div');
-      listEl.id = LIST_ID;
-      listEl.className = 'lb-versions';
-      // Don't insert an empty list — nothing to show
     }
   }
 
@@ -223,12 +244,33 @@
     return m ? +m[1] : null;
   }
 
+  // Undo a scan attempt: drop the overlay and the pending marker so these
+  // cards stay eligible for the next scan.
+  function abandon(todo) {
+    for (const { frame } of todo) {
+      const ovl = frame.querySelector('.' + OVL_CLS);
+      if (ovl) ovl.remove();
+      frame.removeAttribute(CARD_PENDING);
+    }
+  }
+
+  // One pending retry at a time. Without this a dropped server would either
+  // hammer it on every scroll, or (before) leave cards dead forever.
+  function scheduleRetry() {
+    if (retryTimer) return;
+    I('ComfyUI 不可达，10 秒后重试');
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (ctx().type === 'list') scanNewCards();
+    }, 10000);
+  }
+
   async function scanNewCards() {
     if (scanLock) return;
     scanLock = true;
+    const todo = [];
     try {
       const links = findCardLinks();
-      const todo = [];
       for (const link of links) {
         const f = cardFrame(link);
         if (!f || f === document.body) continue;
@@ -243,26 +285,47 @@
       for (const { frame } of todo) {
         ensureRel(frame);
         const d = document.createElement('div'); d.className = OVL_CLS; d.textContent = '⏳';
-        d.style.cssText = 'position:absolute;top:6px;right:6px;z-index:10;padding:0 6px;border-radius:3px;font-size:10px;background:rgba(0,0,0,.5);color:#aaa;pointer-events:none;';
         frame.appendChild(d);
       }
       const ids = [...new Set(todo.map((t) => t.modelId))];
-      const { results } = await send('CHECK_MODELS_BATCH', { modelIds: ids });
-      let n = 0;
+      const res = await send('CHECK_MODELS_BATCH', { modelIds: ids });
+
+      // No response, or every endpoint failed → ComfyUI unreachable. Leaving
+      // CARD_DONE off is what lets these cards recover once it comes back.
+      if (!res || !res.results || res.ok === false) {
+        abandon(todo);
+        scheduleRetry();
+        return;
+      }
+
+      const results = res.results;
+      let n = 0, retryNeeded = false;
       for (const { frame, modelId } of todo) {
         const ovl = frame.querySelector('.' + OVL_CLS); if (ovl) ovl.remove();
-        frame.removeAttribute(CARD_PENDING); frame.setAttribute(CARD_DONE, '1');
-        if (results?.[modelId]?.found) {
+        frame.removeAttribute(CARD_PENDING);
+
+        const hit = results[modelId];
+
+        // No endpoint answered for this card — leave it unscanned so a later
+        // pass picks it up, rather than marking it done with no badge.
+        if (!hit || hit.unknown) { retryNeeded = true; continue; }
+
+        frame.setAttribute(CARD_DONE, '1');
+        if (hit.found) {
           frame.classList.add(CARD_MARKER);
-          const abbr = (results[modelId].foundTypes || []).map((t) => t === 'checkpoint' ? 'CKPT' : 'LoRA').join('/');
+          const abbr = (hit.foundTypes || []).map((t) => t === 'checkpoint' ? 'CKPT' : 'LoRA').join('/');
           const d = document.createElement('div'); d.className = BADGE_CLS;
-          d.textContent = '✅' + abbr + '×' + (results[modelId].versionCount || 1);
-          d.title = '库中有 ' + (results[modelId].versionCount || 1) + ' 个版本 (' + abbr + ')';
-          d.style.cssText = 'position:absolute;top:6px;right:6px;z-index:10;padding:0 6px;border-radius:3px;font-size:10px;font-weight:700;background:#27ae60;color:#fff;pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,.25);white-space:nowrap;';
+          d.textContent = '✅' + abbr + '×' + (hit.versionCount || 1);
+          d.title = '库中有 ' + (hit.versionCount || 1) + ' 个版本 (' + abbr + ')';
           ensureRel(frame); frame.appendChild(d); n++;
         }
       }
+      if (retryNeeded) scheduleRetry();
       if (n) I('scan:', n, 'badges');
+    } catch (e) {
+      // Never leave cards stuck in PENDING — scanNewCards skips those forever.
+      abandon(todo);
+      I('scan error:', (e && e.message) || e);
     } finally { scanLock = false; }
   }
 
@@ -338,20 +401,66 @@
     }
   }
 
-  // Polling fallback — catches shallow SPA routing that doesn't fire history events
-  // Runs every 800ms on detail pages
+  // Polling fallback — catches shallow SPA routing that doesn't fire history
+  // events. Delegates to handlePage() rather than advancing lastUrl itself:
+  // updating it here would swallow the change and skip resetList() on list pages.
   function poll() {
-    const c = ctx();
-    if ((c.type === 'detail' || c.type === 'version') && c.href !== lastDetailHref) {
-      lastDetailHref = c.href;
-      updateDetailBadge();
-    }
-    // Also update lastUrl if needed (poll catches URL changes too)
-    if (c.href !== lastUrl) {
-      lastUrl = c.href;
-    }
+    if (location.href !== lastUrl) handlePage();
     setTimeout(poll, 800);
   }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // EXTERNAL TRIGGERS
+  // ═══════════════════════════════════════════════════════════════════
+
+  // Full re-check: drop cached API results, clear markers, scan again.
+  async function rescan() {
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    await send('CLEAR_CACHE');
+    lastUrl = '';
+    lastDetailHref = '';
+    handlePage();
+  }
+
+  // Requested by the popup's refresh button — re-checks in place instead of
+  // reloading the tab, so scroll position survives.
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type !== 'RESCAN') return false;
+    rescan().then(
+      () => sendResponse({ ok: true }),
+      () => sendResponse({ ok: false })
+    );
+    return true;
+  });
+
+  // Settings changed (e.g. a different ComfyUI host) — cached results are stale.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'sync' && changes.config) rescan();
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // DEBUG
+  // ═══════════════════════════════════════════════════════════════════
+
+  // Snapshot of what the extension currently sees. Content scripts live in an
+  // isolated world, so the DevTools console must be switched to this
+  // extension's context before calling this — it is not visible from the
+  // page's own console.
+  window.__loraBridgeDiag = () => ({
+    url: location.href,
+    pageType: ctx().type,
+    scanLock,
+    retryPending: !!retryTimer,
+    detailReqId,
+    cards: {
+      links: findCardLinks().length,
+      done: document.querySelectorAll('[' + CARD_DONE + ']').length,
+      pending: document.querySelectorAll('[' + CARD_PENDING + ']').length,
+      badged: document.querySelectorAll('.' + BADGE_CLS).length,
+    },
+    inlineBadge: (document.getElementById(BADGE_ID) || {}).textContent || null,
+    versionList: !!document.getElementById(LIST_ID),
+  });
 
   // ═══════════════════════════════════════════════════════════════════
   // START

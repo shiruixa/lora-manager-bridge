@@ -185,3 +185,10 @@ input[type="number"]:focus {
   border-radius: 3px;
   font-size: 11px;
 }
+
+/* ── Toast ───────────────────────────────────────────────────────────── */
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, 12px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}

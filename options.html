@@ -38,23 +38,6 @@
         </div>
       </section>
 
-      <!-- Proxy Settings -->
-      <section class="section">
-        <h2 class="section-title">网络代理</h2>
-
-        <div class="form-group">
-          <label for="proxyUrl">代理地址 (可选)</label>
-          <input
-            type="text"
-            id="proxyUrl"
-            name="proxyUrl"
-            placeholder="留空使用系统代理，如 http://127.0.0.1:7897"
-            spellcheck="false"
-          />
-          <p class="form-hint">用于访问 CivitAI 的代理地址。扩展请求 localhost 的 ComfyUI 不经过代理。如果浏览器已配置系统代理，无需额外设置。</p>
-        </div>
-      </section>
-
       <!-- Cache Settings -->
       <section class="section">
         <h2 class="section-title">缓存</h2>
@@ -83,7 +66,7 @@
     </form>
 
     <footer class="footer">
-      <p>LoRA Manager Bridge v1.0.0</p>
+      <p>LoRA Manager Bridge v<span id="app-version">--</span></p>
       <p><small>在 Edge/Chrome 中加载此扩展: 访问 <code>edge://extensions</code>，启用"开发人员模式"，点击"加载解压缩的扩展"。</small></p>
     </footer>
   </div>
