@@ -186,6 +186,52 @@ input[type="number"]:focus {
   font-size: 11px;
 }
 
+/* ── Checkbox row ────────────────────────────────────────────────────── */
+
+.check-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.check-label input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: #27ae60;
+  cursor: pointer;
+}
+
+/* ── API key status ──────────────────────────────────────────────────── */
+
+.key-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.key-status-value {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.key-status--ok      { color: #27ae60; }
+.key-status--missing { color: #e67e22; }
+.key-status--unknown { color: #a0aec0; }
+
+.form-hint code {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.form-hint a { color: #60a5fa; }
+
 /* ── Toast ───────────────────────────────────────────────────────────── */
 
 @keyframes toast-in {

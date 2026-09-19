@@ -38,6 +38,49 @@
         </div>
       </section>
 
+      <!-- CivitAI API Key -->
+      <section class="section">
+        <h2 class="section-title">CivitAI API Key</h2>
+
+        <div class="form-group">
+          <div class="key-status">
+            <span id="api-key-status" class="key-status-value">检查中…</span>
+            <button type="button" id="btn-open-lm-settings" class="btn btn-outline">📂 打开 LoRA Manager 设置</button>
+          </div>
+          <p class="form-hint">
+            下载模型时 CivitAI 需要认证，没有这个 key 会返回 <code>401</code>，下载会失败。
+            <strong>key 只能填在 LoRA Manager 里</strong>——扩展没有权限代填。
+          </p>
+          <p class="form-hint">
+            位置：LoRA Manager 网页 → 右上角<strong>齿轮</strong> → 第一个标签页 <strong>General</strong>
+            → <strong>语言选择器正下方</strong>（很靠上，不用往下翻很多）→ 找到 <code>CivitAI API Key</code> → 点
+            <strong>Set up</strong> 粘贴保存。
+          </p>
+          <p class="form-hint">
+            key 在 <a href="https://civitai.com/user/account" target="_blank" rel="noopener">civitai.com → 账号设置 → API Keys</a>
+            生成，权限只需 <strong>Models 的 Read</strong>。
+          </p>
+        </div>
+      </section>
+
+      <!-- Download -->
+      <section class="section">
+        <h2 class="section-title">下载</h2>
+
+        <div class="form-group form-group--check">
+          <label class="check-label">
+            <input type="checkbox" id="enableDownloads" name="enableDownloads" />
+            <span>在模型详情页显示「下载到库」按钮</span>
+          </label>
+          <p class="form-hint">
+            下载由 LoRA Manager 自己完成，文件放入<strong>对应类型的模型目录</strong>
+            （LoRA → loras、Checkpoint → checkpoints、Embedding → embeddings）。
+            具体子目录遵循你在 LoRA Manager 里的「下载路径模板」设置——扩展不覆盖它的配置，
+            因此装上即可用，无需改 ComfyUI 启动参数或任何设置。
+          </p>
+        </div>
+      </section>
+
       <!-- Cache Settings -->
       <section class="section">
         <h2 class="section-title">缓存</h2>

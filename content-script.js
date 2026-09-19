@@ -14,19 +14,91 @@
 
   // Concurrency: scanLock for list, detailReqId sequence for detail (no global processing lock)
   let scanLock = false, detailReqId = 0, retryTimer = null;
+  let downloadsEnabled = true;   // overwritten from config below
   let lastUrl = '', lastDetailHref = '';  // track full href for detail version switches
 
   const I = (...a) => console.info(TAG, ...a);
   const esc = (s) => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+  // esc() does not escape quotes, which is fine for text nodes but not for
+  // values interpolated into an HTML attribute.
+  const escAttr = (s) => esc(s).replace(/"/g, '&quot;');
   const nav = (o, ks) => { let c = o; for (const k of ks) { if (c == null) return; c = c[k]; } return c; };
   const ensureRel = (el) => { if (getComputedStyle(el).position === 'static') el.style.position = 'relative'; };
   const removeOldUI = () => {
     const b = document.getElementById(BADGE_ID); if (b) b.remove();
     const l = document.getElementById(LIST_ID); if (l) l.remove();
+    document.querySelectorAll('.lb-dl').forEach((e) => e.remove());
   };
 
   // Native tooltips don't render newlines — join version rows with a separator.
   const tooltip = (vs) => vs.map((v) => '[' + v.modelType + '] ' + v.fileName).join(' · ');
+
+  // Short label per model type, used on list-page card badges.
+  const TYPE_ABBR = { lora: 'LoRA', checkpoint: 'CKPT', embedding: 'EMB' };
+  const abbrOf = (types) => (types || []).map((t) => TYPE_ABBR[t] || String(t).toUpperCase()).join('/');
+
+  // ── Clipboard + toast ────────────────────────────────────────────────
+
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      // Clipboard API needs a user gesture and a focused document; fall back.
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        return ok;
+      } catch (e2) {
+        return false;
+      }
+    }
+  }
+
+  let toastTimer = null;
+  function toast(message) {
+    let el = document.getElementById('lb-toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'lb-toast';
+      el.className = 'lb-toast';
+      document.body.appendChild(el);
+    }
+    el.textContent = message;
+    el.classList.add('lb-toast--on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('lb-toast--on'), 2200);
+  }
+
+  function fmtBytes(n) {
+    if (!n && n !== 0) return '';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+  }
+
+  // The server's wording is accurate but assumes you know where to look.
+  // Map the ones a user can actually act on to something concrete.
+  const ERROR_HINTS = [
+    [/default \w+ root path not set/i, '请先在 LoRA Manager 设置里指定默认模型目录'],
+    [/early access/i, '该模型需付费早期访问，暂时无法下载'],
+    [/already exists/i, '该模型已在库中'],
+  ];
+
+  function friendlyError(message) {
+    const msg = String(message || '');
+    for (const [pattern, hint] of ERROR_HINTS) {
+      if (pattern.test(msg)) return hint;
+    }
+    return msg || '下载失败';
+  }
 
   function makeBadge(cls, text) {
     const el = document.createElement('span');
@@ -193,14 +265,190 @@
 
     const anchor2 = await placeBadge(badgeEl, anchor);
 
+    // Download button — only when this exact version is not in the library yet.
+    if (!matched && downloadsEnabled) {
+      anchor2.appendChild(makeDownloadButton(modelId, versionId, myReqId));
+    }
+
     // Version list — nothing to show when the library has no version of this model.
     if (versions.length > 0) {
       const listEl = document.createElement('div');
       listEl.id = LIST_ID;
       listEl.className = 'lb-versions';
-      listEl.innerHTML = '<details class="lb-details"><summary>📂 已下载的版本 (' + versions.length + ' · ' + types.join(' + ') + ')</summary><ul class="lb-vlist">' + versions.map((v) => { const isM = matched && v.versionId === matched.versionId; return '<li class="' + (isM ? 'lb-vmatch' : '') + '"><span class="lb-vtype lb-vtype--' + (v.modelType || 'lora') + '">' + ((v.modelType || 'L').toUpperCase().slice(0,4)) + '</span><span class="lb-vname">' + esc(v.fileName || v.name) + '</span>' + (v.baseModel ? '<span class="lb-vbase">' + esc(v.baseModel) + '</span>' : '') + (isM ? '<span class="lb-vcur">★ 当前</span>' : '') + '</li>'; }).join('') + '</ul></details>';
+      listEl.innerHTML = '<details class="lb-details"><summary>📂 已下载的版本 (' + versions.length + ' · ' + types.join(' + ') + ')</summary><ul class="lb-vlist">' + versions.map((v) => {
+        const isM = matched && v.versionId === matched.versionId;
+        const copy = v.filePath || v.fileName || '';
+        return '<li class="' + (isM ? 'lb-vmatch' : '') + '" data-lb-copy="' + escAttr(copy) + '" title="点击复制本地路径">' +
+          '<span class="lb-vtype lb-vtype--' + (v.modelType || 'lora') + '">' + ((v.modelType || 'L').toUpperCase().slice(0,4)) + '</span>' +
+          '<span class="lb-vname">' + esc(v.fileName || v.name) + '</span>' +
+          (v.baseModel ? '<span class="lb-vbase">' + esc(v.baseModel) + '</span>' : '') +
+          (isM ? '<span class="lb-vcur">★ 当前</span>' : '') + '</li>';
+      }).join('') + '</ul></details>';
       (anchor2.parentElement || anchor2).insertBefore(listEl, anchor2.nextSibling);
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // DOWNLOAD (detail page)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * "Download to library" button, which becomes a progress bar in place.
+   *
+   * Progress is polled rather than pushed: the server tracks the transfer and
+   * exposes it at /api/lm/download-progress/{id}. The request that starts the
+   * download stays open for the whole transfer, so the worker returns as soon
+   * as it is dispatched and never blocks on it.
+   */
+  // Versions with a download already in flight. The server saves a second
+  // download of the same file under a new name rather than overwriting, so
+  // letting one through twice leaves a duplicate on disk.
+  const downloadsInFlight = new Set();
+  const dlKey = (modelId, versionId) => `${modelId}:${versionId}`;
+
+  function makeDownloadButton(modelId, versionId, reqId) {
+    const btn = document.createElement('button');
+    btn.className = 'lb-dl-btn';
+    btn.type = 'button';
+    btn.textContent = '⬇️ 下载到库';
+
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Guard synchronously: the button is only replaced by the progress UI
+      // after the round trip, and a second click in that window would start a
+      // second download.
+      const key = dlKey(modelId, versionId);
+      if (btn.disabled || downloadsInFlight.has(key)) return;
+      btn.disabled = true;
+      downloadsInFlight.add(key);
+
+      try {
+        const started = await send('DOWNLOAD_MODEL', { modelId, versionId });
+        if (!started || !started.success) {
+          toast('❌ ' + friendlyError(started && started.error));
+          downloadsInFlight.delete(key);
+          btn.disabled = false;
+          return;
+        }
+        toast('⬇️ 已开始下载，文件由 LoRA Manager 放入对应模型目录');
+        startProgressUI(btn, started.downloadId, reqId, modelId, versionId, key);
+      } catch (err) {
+        downloadsInFlight.delete(key);
+        btn.disabled = false;
+      }
+    });
+
+    return btn;
+  }
+
+  /**
+   * Ask the library whether the requested version is really there now.
+   *
+   * The only trustworthy completion signal: the server's own state, not the
+   * absence of a progress record.
+   */
+  async function confirmDownloaded(modelId, versionId) {
+    const r = await send('CHECK_MODEL', { modelId, versionId });
+    if (!r || r.error || r.unreachable) return false;
+    if (versionId) return !!r.matchedVersion;
+    return !!r.found;
+  }
+
+  function startProgressUI(btn, downloadId, reqId, modelId, versionId, key) {
+    const box = document.createElement('span');
+    box.className = 'lb-dl';
+    box.innerHTML = '<span class="lb-dl-bar"><i></i></span>' +
+      '<span class="lb-dl-pct">0%</span>' +
+      '<span class="lb-dl-meta"></span>' +
+      '<button type="button" class="lb-dl-cancel">取消</button>';
+    btn.replaceWith(box);
+
+    const bar = box.querySelector('.lb-dl-bar > i');
+    const pct = box.querySelector('.lb-dl-pct');
+    const meta = box.querySelector('.lb-dl-meta');
+    const cancelBtn = box.querySelector('.lb-dl-cancel');
+
+    // Absolute deadline so a stalled transfer can't poll forever.
+    const deadline = Date.now() + 60 * 60 * 1000;
+    let cancelled = false;
+
+    // Release the in-flight guard on every terminal path, so a retry after a
+    // failure is still possible.
+    const release = () => { if (key) downloadsInFlight.delete(key); };
+
+    cancelBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      cancelled = true;
+      cancelBtn.disabled = true;
+      const res = await send('CANCEL_DOWNLOAD', { downloadId });
+      toast(res && res.success ? '已取消下载（已下载的部分保留）' : '❌ 取消失败');
+      release();
+      box.remove();
+    });
+
+    const tick = async () => {
+      // Page navigated away or a newer request took over — stop silently.
+      if (cancelled || reqId !== detailReqId) {
+        release();
+        box.remove();
+        return;
+      }
+      if (Date.now() > deadline) {
+        release();
+        box.remove();
+        toast('⚠️ 下载状态超时，请到 LoRA Manager 查看');
+        return;
+      }
+
+      const st = await send('DOWNLOAD_STATUS', { downloadId });
+      if (cancelled || reqId !== detailReqId) { release(); box.remove(); return; }
+
+      if (!st || !st.success) {
+        // Worker unreachable — stop polling rather than spamming.
+        release();
+        box.remove();
+        toast('❌ 无法获取下载状态');
+        return;
+      }
+
+      const p = Math.max(0, Math.min(100, Math.round(st.progress || 0)));
+      bar.style.width = p + '%';
+      pct.textContent = p + '%';
+
+      const parts = [];
+      if (st.totalBytes) parts.push(fmtBytes(st.bytesDownloaded || 0) + ' / ' + fmtBytes(st.totalBytes));
+      if (st.bytesPerSecond) parts.push(fmtBytes(st.bytesPerSecond) + '/s');
+      meta.textContent = parts.join(' · ');
+
+      if (st.error) {
+        release();
+        box.remove();
+        toast('❌ ' + friendlyError(st.error));
+        return;
+      }
+
+      if (st.finished) {
+        release();
+        box.remove();
+        // "The transfer ended" is not the same as "the file arrived" — a
+        // download CivitAI rejects also ends. Ask the library what actually
+        // landed instead of announcing success.
+        const confirmed = await confirmDownloaded(modelId, versionId);
+        toast(confirmed
+          ? '✅ 已下载到库'
+          : '⚠️ 下载未完成，请查看 LoRA Manager 的下载记录');
+        // updateDetailBadge() bumps detailReqId, which also retires this tick.
+        updateDetailBadge();
+        return;
+      }
+
+      setTimeout(tick, 1200);
+    };
+
+    tick();
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -313,10 +561,25 @@
         frame.setAttribute(CARD_DONE, '1');
         if (hit.found) {
           frame.classList.add(CARD_MARKER);
-          const abbr = (hit.foundTypes || []).map((t) => t === 'checkpoint' ? 'CKPT' : 'LoRA').join('/');
-          const d = document.createElement('div'); d.className = BADGE_CLS;
-          d.textContent = '✅' + abbr + '×' + (hit.versionCount || 1);
-          d.title = '库中有 ' + (hit.versionCount || 1) + ' 个版本 (' + abbr + ')';
+          const abbr = abbrOf(hit.foundTypes);
+          const count = hit.versionCount || 1;
+          const names = hit.names || [];
+
+          const d = document.createElement('div');
+          d.className = BADGE_CLS;
+          d.textContent = '✅' + abbr + '×' + count;
+          // Carries the payload for the delegated click handler and popover.
+          d.dataset.lbCopy = names[0] || '';
+
+          const pop = document.createElement('div');
+          pop.className = 'lb-card-pop';
+          pop.innerHTML =
+            '<div class="lb-pop-head">库中已有 ' + count + ' 个版本 · ' + esc(abbr) + '</div>' +
+            names.map((nm) => '<div class="lb-pop-file">' + esc(nm) + '</div>').join('') +
+            (count > names.length ? '<div class="lb-pop-more">…还有 ' + (count - names.length) + ' 个</div>' : '') +
+            '<div class="lb-pop-hint">点击复制文件名</div>';
+          d.appendChild(pop);
+
           ensureRel(frame); frame.appendChild(d); n++;
         }
       }
@@ -372,6 +635,26 @@
   // DETECTION
   // ═══════════════════════════════════════════════════════════════════
 
+  // One delegated listener instead of one per badge: badges come and go with
+  // every scan, and the cards' own links would otherwise also navigate.
+  document.addEventListener('click', (e) => {
+    const target = e.target && e.target.closest
+      ? (e.target.closest('.' + BADGE_CLS) || e.target.closest('[data-lb-copy]'))
+      : null;
+    if (!target) return;
+
+    const text = target.dataset.lbCopy;
+    if (!text) return;
+
+    // The badge sits on top of the card link — don't open the model page.
+    e.preventDefault();
+    e.stopPropagation();
+
+    copyText(text).then((ok) => {
+      toast(ok ? '📋 已复制：' + text : '❌ 复制失败');
+    });
+  }, true);
+
   // Scroll → list
   let st;
   window.addEventListener('scroll', () => {
@@ -425,18 +708,51 @@
   // Requested by the popup's refresh button — re-checks in place instead of
   // reloading the tab, so scroll position survives.
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message?.type !== 'RESCAN') return false;
-    rescan().then(
-      () => sendResponse({ ok: true }),
-      () => sendResponse({ ok: false })
-    );
-    return true;
+    if (message?.type === 'RESCAN') {
+      rescan().then(
+        () => sendResponse({ ok: true }),
+        () => sendResponse({ ok: false })
+      );
+      return true;
+    }
+
+    // What the popup shows about this page. Synchronous, so no async reply.
+    // The ids are included because the popup cannot read the tab's URL without
+    // an extra permission — this script is the authority on where we are.
+    if (message?.type === 'PAGE_STATUS') {
+      const c = ctx();
+      sendResponse({
+        ok: true,
+        pageType: c.type,
+        modelId: c.modelId,
+        versionId: c.versionId,
+        badged: document.querySelectorAll('.' + BADGE_CLS).length,
+        pending: document.querySelectorAll('[' + CARD_PENDING + ']').length,
+        inline: (document.getElementById(BADGE_ID) || {}).textContent || null,
+        retryPending: !!retryTimer,
+      });
+      return false;
+    }
+
+    return false;
   });
 
   // Settings changed (e.g. a different ComfyUI host) — cached results are stale.
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'sync' && changes.config) rescan();
+    if (area !== 'sync' || !changes.config) return;
+    readConfig();
+    rescan();
   });
+
+  function readConfig() {
+    try {
+      chrome.storage.sync.get('config', (stored) => {
+        if (chrome.runtime.lastError) return;
+        // Default to enabled so the button works before settings are opened.
+        downloadsEnabled = stored?.config?.enableDownloads !== false;
+      });
+    } catch (e) { /* storage unavailable */ }
+  }
 
   // ═══════════════════════════════════════════════════════════════════
   // DEBUG
@@ -467,6 +783,7 @@
   // ═══════════════════════════════════════════════════════════════════
 
   I('loaded');
+  readConfig();
   lastUrl = '';
   lastDetailHref = '';
   handlePage();

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LoRA Manager Bridge",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "在 CivitAI 页面上标记已在 ComfyUI LoRA Manager 库中的模型",
   "author": "shiruixa",
   "homepage_url": "https://github.com/shiruixa/lora-manager-bridge",
@@ -13,7 +13,8 @@
   },
 
   "permissions": [
-    "storage"
+    "storage",
+    "activeTab"
   ],
 
   "host_permissions": [
@@ -50,6 +51,6 @@
 
   "options_ui": {
     "page": "options.html",
-    "open_in_tab": false
+    "open_in_tab": true
   }
 }

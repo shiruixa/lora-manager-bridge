@@ -16,25 +16,34 @@
     <section class="status-section">
       <div class="status-row">
         <span class="status-label">ComfyUI 状态</span>
-        <span id="server-status" class="status-value status--checking">检查中...</span>
+        <span id="server-status" class="status-value status--checking">检查中…</span>
       </div>
       <div class="status-row">
-        <span class="status-label">库中模型总数</span>
+        <span class="status-label">库中模型</span>
         <span id="lora-count" class="status-value">--</span>
       </div>
       <div class="status-row">
-        <span class="status-label">LoRA / Checkpoint</span>
-        <span id="type-count" class="status-value">--</span>
+        <span class="status-label">LoRA / CKPT / EMB</span>
+        <span id="type-count" class="status-value status-mono">--</span>
       </div>
       <div class="status-row">
         <span class="status-label">当前页面</span>
         <span id="current-page" class="status-value status-page">--</span>
       </div>
+      <div class="status-row" id="page-status-row" hidden>
+        <span class="status-label">本页标记</span>
+        <span id="page-status" class="status-value status-page">--</span>
+      </div>
     </section>
+
+    <p id="hint" class="hint" hidden></p>
 
     <section class="actions">
       <button id="btn-refresh" class="btn btn-primary">🔄 重新检查本页</button>
-      <button id="btn-options" class="btn btn-secondary">⚙️ 设置</button>
+      <div class="actions-row">
+        <button id="btn-open-lm" class="btn btn-secondary">📂 LoRA Manager</button>
+        <button id="btn-options" class="btn btn-secondary">⚙️ 设置</button>
+      </div>
     </section>
 
     <footer class="footer">

@@ -84,11 +84,30 @@ body {
 
 .status-page {
   font-size: 11px;
-  max-width: 120px;
+  max-width: 165px;
   text-align: right;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.status-mono {
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  color: #cbd5e0;
+}
+
+/* ── Hint ────────────────────────────────────────────────────────────── */
+
+.hint {
+  margin: -4px 0 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #cbd5e0;
+  background: rgba(243, 156, 18, 0.1);
+  border: 1px solid rgba(243, 156, 18, 0.25);
 }
 
 /* ── Actions ─────────────────────────────────────────────────────────── */
@@ -98,6 +117,15 @@ body {
   flex-direction: column;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.actions-row {
+  display: flex;
+  gap: 8px;
+}
+
+.actions-row .btn {
+  flex: 1;
 }
 
 .btn {
@@ -111,12 +139,19 @@ body {
   text-align: center;
 }
 
-.btn:hover {
+.btn:hover:not(:disabled) {
   transform: translateY(-1px);
 }
 
-.btn:active {
+.btn:active:not(:disabled) {
   transform: translateY(0);
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none;
+  box-shadow: none;
 }
 
 .btn-primary {
@@ -127,6 +162,16 @@ body {
 
 .btn-primary:hover {
   box-shadow: 0 4px 12px rgba(39, 174, 96, 0.4);
+}
+
+.btn-warn {
+  background: linear-gradient(135deg, #e67e22, #f39c12);
+  color: #1a1a2e;
+  box-shadow: 0 2px 8px rgba(243, 156, 18, 0.3);
+}
+
+.btn-warn:hover:not(:disabled) {
+  box-shadow: 0 4px 12px rgba(243, 156, 18, 0.45);
 }
 
 .btn-secondary {

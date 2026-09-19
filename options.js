@@ -7,6 +7,7 @@
 const DEFAULT_CONFIG = {
   comfyUIHost: 'http://127.0.0.1:8188',
   cacheTTLMs: 30000,
+  enableDownloads: true,   // must match the default in content-script.js
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -16,11 +17,57 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnTest = document.getElementById('btn-test');
   const testResult = document.getElementById('test-result');
   const btnClearCache = document.getElementById('btn-clear-cache');
+  const downloadsInput = document.getElementById('enableDownloads');
 
   // ── Version footer (kept in sync with manifest.json) ───────────────────
 
   document.getElementById('app-version').textContent =
     chrome.runtime.getManifest().version;
+
+  // ── CivitAI API key status ─────────────────────────────────────────────
+  //
+  // The key lives in LoRA Manager and only LoRA Manager can write it (its
+  // settings endpoint is POST-only, which ComfyUI's origin check rejects for
+  // extensions). So this reports and links rather than offering an input that
+  // could never work.
+
+  const keyStatusEl = document.getElementById('api-key-status');
+  const btnOpenLmSettings = document.getElementById('btn-open-lm-settings');
+
+  async function refreshKeyStatus() {
+    try {
+      const summary = await chrome.runtime.sendMessage({ type: 'GET_LIBRARY_SUMMARY' });
+
+      if (!summary || !summary.connected) {
+        keyStatusEl.textContent = 'ComfyUI 未连接，无法检测';
+        keyStatusEl.className = 'key-status-value key-status--unknown';
+        return;
+      }
+      if (summary.apiKeySet === null) {
+        keyStatusEl.textContent = '该版本未上报此项，请手动到 LoRA Manager 里确认';
+        keyStatusEl.className = 'key-status-value key-status--unknown';
+        return;
+      }
+      if (summary.apiKeySet) {
+        keyStatusEl.textContent = '✅ 已配置';
+        keyStatusEl.className = 'key-status-value key-status--ok';
+      } else {
+        keyStatusEl.textContent = '⚠️ 未配置 —— 下载模型会失败';
+        keyStatusEl.className = 'key-status-value key-status--missing';
+      }
+    } catch (e) {
+      keyStatusEl.textContent = '检测失败';
+      keyStatusEl.className = 'key-status-value key-status--unknown';
+    }
+  }
+
+  btnOpenLmSettings.addEventListener('click', () => {
+    const host = hostInput.value.trim().replace(/\/+$/, '') || 'http://127.0.0.1:8188';
+    // tabs.create is more reliable than window.open from an options page.
+    chrome.tabs.create({ url: `${host}/loras` });
+  });
+
+  refreshKeyStatus();
 
   // ── Load current config ────────────────────────────────────────────────
 
@@ -36,6 +83,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   hostInput.value = config.comfyUIHost;
   cacheInput.value = String(config.cacheTTLMs);
+  downloadsInput.checked = config.enableDownloads !== false;
 
   // ── Test connectivity ──────────────────────────────────────────────────
 
@@ -78,6 +126,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const newConfig = {
       comfyUIHost: hostInput.value.trim() || 'http://127.0.0.1:8188',
       cacheTTLMs: Math.max(1000, Math.min(300000, parseInt(cacheInput.value, 10) || 30000)),
+      enableDownloads: downloadsInput.checked,
     };
 
     try {

@@ -41,6 +41,7 @@ const MAX_CONCURRENT_REQUESTS = 6;
 const MODEL_ENDPOINTS = [
   { type: 'lora',       endpoint: '/api/lm/loras/list',       label: 'LoRA' },
   { type: 'checkpoint', endpoint: '/api/lm/checkpoints/list', label: 'Checkpoint' },
+  { type: 'embedding',  endpoint: '/api/lm/embeddings/list',  label: 'Embedding' },
 ];
 
 // ============================================================================
@@ -120,7 +121,7 @@ function evictCache(ttlMs) {
  * trigger overlapping scans, and without this they'd both hit the server
  * because the cache is only filled once the response lands.
  */
-async function queryEndpoint(endpoint, params = {}) {
+async function queryEndpoint(endpoint, params = {}, options = {}) {
   const config = await getConfig();
   const baseUrl = config.comfyUIHost.replace(/\/+$/, '');
   const url = new URL(`${baseUrl}${endpoint}`);
@@ -132,43 +133,209 @@ async function queryEndpoint(endpoint, params = {}) {
   }
 
   const cacheKey = url.toString();
-  evictCache(config.cacheTTLMs);
+
+  // Polled endpoints (download progress) must never be served from cache.
+  if (options.noCache) {
+    return fetchJson(cacheKey, REQUEST_TIMEOUT_MS);
+  }
+
+  const ttlMs = options.ttlMs ?? config.cacheTTLMs;
+  evictCache(ttlMs);
 
   const cached = cache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < config.cacheTTLMs) {
+  if (cached && Date.now() - cached.timestamp < ttlMs) {
     return cached.data;
   }
 
   const inflightRequest = inflight.get(cacheKey);
   if (inflightRequest) return inflightRequest;
 
-  const request = (async () => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    try {
-      const response = await fetch(cacheKey, {
-        signal: controller.signal,
-        headers: { 'Accept': 'application/json' },
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      const data = await response.json();
+  const request = fetchJson(cacheKey, REQUEST_TIMEOUT_MS)
+    .then((data) => {
       cache.set(cacheKey, { data, timestamp: Date.now() });
       return data;
-    } catch (error) {
+    })
+    .catch((error) => {
       console.debug('[LoraBridge] API request failed:', endpoint, error.message);
       throw error;
-    } finally {
-      clearTimeout(timeoutId);
+    })
+    .finally(() => {
       inflight.delete(cacheKey);
-    }
-  })();
+    });
 
   inflight.set(cacheKey, request);
   return request;
+}
+
+/**
+ * GET a URL and parse JSON, aborting after `timeoutMs`.
+ */
+async function fetchJson(url, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'Accept': 'application/json' },
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return await response.json();
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// ============================================================================
+// Download
+// ============================================================================
+
+// downloadId → { result, error } for downloads started this session.
+const downloads = new Map();
+
+/**
+ * Start a download and return immediately with its id.
+ *
+ * Uses the **GET** variant deliberately. Browsers attach an `Origin` header to
+ * POSTs but not to GETs, and ComfyUI rejects any loopback request whose Origin
+ * differs from the Host (its anti-CSRF guard, server.py). A POST from the
+ * extension therefore 403s against a stock ComfyUI unless the user passes
+ * --enable-cors-header — which is far too much to ask of anyone installing this
+ * extension. GET carries no Origin, so it works unmodified.
+ *
+ * The trade-off: the GET variant takes no `model_root`, so the destination is
+ * LoRA Manager's own decision (`use_default_paths=true`) — the model-type root,
+ * plus whatever subfolder its path template specifies. The extension
+ * deliberately does not override the host application's own configuration.
+ *
+ * The request stays open for the whole transfer (the server downloads inside
+ * it), so it is intentionally not awaited; `download_id` is generated up front
+ * so progress polling can start immediately.
+ */
+async function handleDownloadModel({ modelId, versionId }) {
+  if (!modelId && !versionId) {
+    return { success: false, error: '缺少 modelId / versionId' };
+  }
+
+  let baseUrl;
+  try {
+    baseUrl = await getBaseUrl();
+  } catch (error) {
+    return { success: false, error: String((error && error.message) || error) };
+  }
+
+  const downloadId = crypto.randomUUID();
+  const params = new URLSearchParams({
+    download_id: downloadId,
+    use_default_paths: 'true',
+  });
+  if (modelId) params.set('model_id', String(modelId));
+  if (versionId) params.set('model_version_id', String(versionId));
+
+  const url = `${baseUrl}/api/lm/download-model-get?${params}`;
+
+  // Drop settled entries so a long session doesn't accumulate them.
+  for (const [id, e] of downloads) {
+    if (e.result || e.error) downloads.delete(id);
+  }
+
+  let markSettled;
+  const entry = {
+    result: null,
+    error: null,
+    // Resolves once the outcome is known, so a poller that has lost the
+    // server-side progress entry can wait for the authoritative answer.
+    settled: new Promise((resolve) => { markSettled = resolve; }),
+  };
+  downloads.set(downloadId, entry);
+
+  fetch(url, { headers: { 'Accept': 'application/json' } })
+    .then(async (response) => {
+      const text = await response.text();
+      let data;
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch (e) {
+        data = { raw: text };
+      }
+      if (!response.ok || data?.success === false) {
+        entry.error = data?.error || `HTTP ${response.status}`;
+      } else {
+        entry.result = data;
+      }
+    })
+    .catch((error) => {
+      entry.error = String((error && error.message) || error);
+    })
+    .finally(markSettled);
+
+  console.debug('[LoraBridge] download started:', downloadId);
+  return { success: true, downloadId };
+}
+
+/**
+/**
+ * Poll one download's progress.
+ *
+ * The server drops progress entries once a transfer ends, so a 404 means the
+ * transfer is over — but "over" is not the same as "succeeded": a download
+ * rejected by CivitAI also ends this way. So on 404 we wait briefly for our own
+ * request to settle, which carries the real outcome.
+ */
+async function handleDownloadStatus({ downloadId }) {
+  if (!downloadId) return { success: false, error: '缺少 downloadId' };
+
+  const entry = downloads.get(downloadId);
+  let progressData = null;
+  let stillRunning = true;
+
+  try {
+    progressData = await queryEndpoint(
+      `/api/lm/download-progress/${downloadId}`,
+      {},
+      { noCache: true }
+    );
+  } catch (e) {
+    // 404 → no longer tracked server-side, i.e. the transfer is over.
+    stillRunning = false;
+  }
+
+  // The progress entry is removed just before the response is written, so a
+  // request that is still pending here is about to tell us what happened.
+  if (!stillRunning && entry && !entry.result && !entry.error) {
+    await Promise.race([entry.settled, new Promise((r) => setTimeout(r, 2500))]);
+  }
+
+  const finished = !stillRunning || !!(entry && entry.result);
+  const failed = !!(progressData && progressData.success === false);
+
+  return {
+    success: true,
+    downloadId,
+    finished: finished || failed || entry?.error != null,
+    progress: progressData?.progress ?? (finished ? 100 : 0),
+    bytesDownloaded: progressData?.bytes_downloaded ?? null,
+    totalBytes: progressData?.total_bytes ?? null,
+    bytesPerSecond: progressData?.bytes_per_second ?? null,
+    error: entry?.error || progressData?.error || null,
+  };
+}
+
+/**
+ * Cancel an in-flight download. The server keeps partial files.
+ */
+async function handleCancelDownload({ downloadId }) {
+  if (!downloadId) return { success: false, error: '缺少 downloadId' };
+  try {
+    const result = await queryEndpoint('/api/lm/cancel-download-get', { download_id: downloadId });
+    if (result?.success === false) {
+      return { success: false, error: result.error || '取消失败' };
+    }
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: String((error && error.message) || error) };
+  }
 }
 
 /**
@@ -235,10 +402,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === 'CLEAR_CACHE') {
-    cache.clear();
-    sendResponse({ success: true });
+  if (message.type === 'DOWNLOAD_MODEL') {
+    respond(handleDownloadModel(message.payload), sendResponse);
     return true;
+  }
+
+  if (message.type === 'DOWNLOAD_STATUS') {
+    respond(handleDownloadStatus(message.payload), sendResponse);
+    return true;
+  }
+
+  if (message.type === 'CANCEL_DOWNLOAD') {
+    respond(handleCancelDownload(message.payload), sendResponse);
+    return true;
+  }
+
+  if (message.type === 'CLEAR_CACHE') {
+    // Clears cached API results only — deliberately not the download map, so an
+    // in-flight transfer keeps its completion/error tracking.
+    cache.clear();
+    // Responded synchronously, so do NOT return true — that would tell the
+    // sender to keep the channel open for a reply that never comes, and the
+    // worker being torn down then surfaces as
+    // "message channel closed before a response was received".
+    sendResponse({ success: true });
+    return false;
   }
 
   return false;
@@ -287,6 +475,10 @@ async function queryAllEndpoints({ modelId }) {
         modelId: item.civitai?.modelId || modelId || null,
         name: item.model_name || item.file_name,
         fileName: item.file_name,
+        // Full local path: only ever sent for the single-model lookup. Batch
+        // responses carry file *names* only, so the user's directory layout
+        // never lands in the DOM of a public page.
+        filePath: item.file_path || '',
         baseModel: item.base_model || '',
         modelType: result.type,
         sha256: item.sha256 || '',
@@ -369,7 +561,7 @@ async function handleCheckModelsBatch({ modelIds }) {
   // answer for — caller must retry those rather than treat them as absent.
   const results = {};
   for (const mid of unique) {
-    results[mid] = { found: false, versionCount: 0, foundTypes: [], unknown: true };
+    results[mid] = { found: false, versionCount: 0, foundTypes: [], names: [], unknown: true };
   }
 
   if (unique.length === 0) return { results, ok: true };
@@ -396,6 +588,14 @@ async function handleCheckModelsBatch({ modelIds }) {
             results[modelId].versionCount += items.length;
             if (!results[modelId].foundTypes.includes(label)) {
               results[modelId].foundTypes.push(label);
+            }
+            // A few file names for the hover popover — names only, never paths.
+            for (const item of items) {
+              if (results[modelId].names.length >= 3) break;
+              const name = item.file_name || item.model_name;
+              if (name && !results[modelId].names.includes(name)) {
+                results[modelId].names.push(name);
+              }
             }
           }
         } catch (e) {
@@ -440,26 +640,42 @@ async function runWithConcurrency(tasks, limit) {
  */
 async function handleGetLibrarySummary() {
   try {
-    let total = 0;
-    let loraCount = 0;
-    let checkpointCount = 0;
-    for (const { type, endpoint } of MODEL_ENDPOINTS) {
-      try {
-        const data = await queryEndpoint(endpoint, { page_size: 1 });
-        const n = data?.total ?? 0;
-        total += n;
-        if (type === 'lora') loraCount = n;
-        if (type === 'checkpoint') checkpointCount = n;
-      } catch (e) {}
-    }
+    // Built from MODEL_ENDPOINTS so adding a model type can't leave the
+    // per-type counts silently out of step with `total` again.
+    const settled = await Promise.all(
+      MODEL_ENDPOINTS.map(async ({ type, endpoint }) => {
+        try {
+          const data = await queryEndpoint(endpoint, { page_size: 1 });
+          return [type, data?.total ?? 0];
+        } catch (e) {
+          return [type, 0];
+        }
+      })
+    );
+    const counts = Object.fromEntries(settled);
+
+    // Whether LoRA Manager has a CivitAI API key. Without one, every download
+    // fails with 401 — worth surfacing before the user hits that wall.
+    let apiKeySet = null;
+    try {
+      const settingsData = await queryEndpoint('/api/lm/settings');
+      if (settingsData && settingsData.settings) {
+        apiKeySet = !!settingsData.settings.civitai_api_key_set;
+      }
+    } catch (e) { /* older builds may not report it */ }
+
     const connectivity = await checkConnectivity();
     return {
-      total,
-      loraCount,
-      checkpointCount,
+      counts,
+      total: Object.values(counts).reduce((a, b) => a + b, 0),
+      // Convenience keys kept for the popup's fixed fields.
+      loraCount: counts.lora ?? 0,
+      checkpointCount: counts.checkpoint ?? 0,
+      embeddingCount: counts.embedding ?? 0,
+      apiKeySet,
       connected: connectivity.connected,
     };
   } catch (error) {
-    return { total: 0, loraCount: 0, checkpointCount: 0, connected: false, error: error.message };
+    return { counts: {}, total: 0, connected: false, error: error.message };
   }
 }

@@ -108,6 +108,7 @@
 
 .lb-vtype--lora       { background: rgba(52,211,153,0.15); color: #34d399; }
 .lb-vtype--checkpoint { background: rgba(96,165,250,0.15); color: #60a5fa; }
+.lb-vtype--embedding  { background: rgba(196,181,253,0.15); color: #c4b5fd; }
 
 .lb-vname {
   flex: 1;
@@ -171,6 +172,159 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
+/* ── Card badge: hover popover + click-to-copy ──────────────────────── */
+
+.lb-card-badge {
+  /* Unlike the spinner overlay, this one is interactive. */
+  pointer-events: auto;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+}
+
+.lb-card-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  display: none;
+  min-width: 150px;
+  max-width: 260px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  text-align: left;
+  font-weight: 400;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: normal;
+  word-break: break-all;
+  /* Display-only: never intercept the card's own hover/click. */
+  pointer-events: none;
+  background: rgba(17, 24, 39, 0.96);
+  color: #e5e7eb;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.lb-card-badge:hover .lb-card-pop { display: block; }
+
+.lb-pop-head {
+  font-weight: 700;
+  color: #34d399;
+  margin-bottom: 3px;
+}
+
+.lb-pop-file {
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  color: #d4d4d8;
+}
+
+.lb-pop-more { color: #9ca3af; }
+
+.lb-pop-hint {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  color: #9ca3af;
+}
+
+/* ── Detail page: version rows are clickable ────────────────────────── */
+
+.lb-vlist li[data-lb-copy] { cursor: pointer; }
+.lb-vlist li[data-lb-copy]:hover { background: rgba(39, 174, 96, 0.08); }
+
+/* ── Detail page: download button + progress ────────────────────────── */
+
+.lb-dl-btn {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(39, 174, 96, 0.45);
+  background: rgba(39, 174, 96, 0.12);
+  color: #27ae60;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.lb-dl-btn:hover { background: rgba(39, 174, 96, 0.22); }
+
+.lb-dl {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 8px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(160, 174, 192, 0.3);
+  background: rgba(160, 174, 192, 0.08);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 11px;
+  color: #a0aec0;
+  vertical-align: middle;
+}
+
+.lb-dl-bar {
+  display: block;
+  width: 90px;
+  height: 5px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.lb-dl-bar > i {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: #27ae60;
+  transition: width 0.4s ease;
+}
+
+.lb-dl-pct { font-weight: 700; color: #27ae60; min-width: 30px; }
+.lb-dl-meta { color: #718096; }
+
+.lb-dl-cancel {
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(231, 76, 60, 0.35);
+  background: transparent;
+  color: #e74c3c;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.lb-dl-cancel:hover { background: rgba(231, 76, 60, 0.12); }
+.lb-dl-cancel:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Toast ──────────────────────────────────────────────────────────── */
+
+.lb-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translate(-50%, 12px);
+  z-index: 2147483647;
+  max-width: 70vw;
+  padding: 9px 18px;
+  border-radius: 8px;
+  background: rgba(17, 24, 39, 0.96);
+  color: #e5e7eb;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  word-break: break-all;
+}
+
+.lb-toast--on { opacity: 1; transform: translate(-50%, 0); }
+
 /* ── Light theme (CivitAI sets data-mantine-color-scheme on <html>) ──── */
 /* The default palette above is tuned for dark backgrounds; these overrides
    keep the version list legible when CivitAI is switched to light. */
@@ -202,3 +356,18 @@ html[data-mantine-color-scheme='light'] .lb-inline-loading {
   color: #64748b;
   border-color: rgba(100, 116, 139, 0.35);
 }
+
+html[data-mantine-color-scheme='light'] .lb-dl {
+  color: #475569;
+  border-color: rgba(100, 116, 139, 0.3);
+  background: rgba(100, 116, 139, 0.06);
+}
+
+html[data-mantine-color-scheme='light'] .lb-dl-meta { color: #64748b; }
+
+html[data-mantine-color-scheme='light'] .lb-dl-bar {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+/* The popover and toast are dark-on-purpose surfaces in both themes —
+   they float above the page and need to stay legible over any artwork. */
