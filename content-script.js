@@ -862,19 +862,68 @@
         look.icon + ' ' + esc(f.label) + '</div>';
     }).join('');
 
+    // Once nothing is running the bubble is just a result notice, so it gets a
+    // dismiss affordance: the text stays long enough to read, and one click
+    // clears it. A running transfer gets no ✕ — it is not dismissable.
+    const hasRunning = activeDownloads.length > 0;
     el.innerHTML =
       '<div class="lb-bubble-head">' +
-        (activeDownloads.length ? '⬇️ 正在下载 (' + activeDownloads.length + ')' : '下载结果') +
+        (hasRunning ? '⬇️ 正在下载 (' + activeDownloads.length + ')' : '下载结果') +
+        (hasRunning ? '' : '<button type="button" class="lb-bubble-close" title="关闭">✕</button>') +
       '</div>' + rows + done;
+
+    if (!hasRunning) {
+      const close = el.querySelector('.lb-bubble-close');
+      if (close) {
+        close.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          recentFinishes = [];
+          renderBubble();
+        });
+      }
+    }
   }
 
-  // Poll fast while something is running, slowly otherwise — the fast path is
-  // what keeps the worker awake and the numbers live.
+  /**
+   * Keep the bubble in step with the worker.
+   *
+   * Exception-safe on purpose: a throw anywhere in here used to stop the loop
+   * for good, freezing the bubble on whatever it last showed — so a finished
+   * download's result stayed on screen forever with nothing left to update or
+   * age it out.
+   */
   async function pollDownloads() {
     clearTimeout(bubbleTimer);
+    try {
+      await pollOnce();
+    } catch (e) {
+      I('poll error:', (e && e.message) || e);
+    } finally {
+      // Always re-render and always reschedule. The render is what expires
+      // finished rows, so it must happen even when a poll fails.
+      renderBubble();
+      bubbleTimer = setTimeout(pollDownloads, 2000);
+    }
+  }
+
+  // A poll that fails says nothing about what is running, so the last known
+  // list is kept — but not forever: after this many consecutive failures the
+  // state is unknown, and showing a stale "downloading" row forever is worse
+  // than showing nothing.
+  let failedPolls = 0;
+
+  async function pollOnce() {
     const res = await send('ACTIVE_DOWNLOADS');
 
-    if (res && res.success) {
+    if (!res || !res.success || !Array.isArray(res.downloads)) {
+      if (++failedPolls >= 3) activeDownloads = [];
+      return;
+    }
+    failedPolls = 0;
+
+    // Everything below assumes the poll actually answered.
+    {
       const seen = new Set(res.downloads.map((d) => d.downloadId));
       // Anything we were showing that is no longer running has just finished.
       for (const prev of activeDownloads) {
@@ -903,7 +952,6 @@
         }
       }
       refreshDownloadAreas();
-      renderBubble();
 
       // Pick up outcomes that finished while no page was watching, so the
       // bubble is the surface that reports them.
@@ -929,13 +977,6 @@
         renderBubble();
       }
     }
-
-    // A steady short interval, not a long idle one. Switching to another tab
-    // means waiting out whatever interval that tab happened to be in, and a
-    // long idle wait made a running download look like it was not there at all.
-    // This also keeps the worker awake while any CivitAI tab is open, which is
-    // what stops it being torn down mid-transfer.
-    bubbleTimer = setTimeout(pollDownloads, 2000);
   }
 
   const prevBytes = new Map();

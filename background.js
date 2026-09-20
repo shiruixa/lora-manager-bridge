@@ -254,9 +254,16 @@ const ALREADY_IN_LIBRARY = /already exists|already in (the )?\w+ library/i;
 
 const INFLIGHT_KEY = 'inflightDownloads';   // downloadId → { modelId, versionId, at }
 const PENDING_KEY = 'pendingNotices';       // downloadId → { ok, fileName, error, at }
+const HISTORY_KEY = 'downloadHistory';      // newest-first list of past outcomes
+
+// Outcomes are kept after they have been reported, so the popup can show a log
+// that survives being closed and reopened. "Claimed once" is the right rule for
+// the badge and the toast, but it made the log vanish the moment it was read.
+const HISTORY_MAX = 20;
 
 const inFlight = new Map();
 const unnotified = new Map();   // ok: true = succeeded, false = failed, null = unknown
+let history = [];               // newest first
 
 let hydrated = false;
 
@@ -264,9 +271,10 @@ async function hydrate() {
   if (hydrated) return;
   hydrated = true;
   try {
-    const stored = await chrome.storage.session.get([INFLIGHT_KEY, PENDING_KEY]);
+    const stored = await chrome.storage.session.get([INFLIGHT_KEY, PENDING_KEY, HISTORY_KEY]);
     for (const [id, v] of Object.entries(stored[INFLIGHT_KEY] || {})) inFlight.set(id, v);
     for (const [id, v] of Object.entries(stored[PENDING_KEY] || {})) unnotified.set(id, v);
+    if (Array.isArray(stored[HISTORY_KEY])) history = stored[HISTORY_KEY];
   } catch (e) {
     console.debug('[LoraBridge] could not restore download state:', e.message);
   }
@@ -278,8 +286,23 @@ function persistState() {
     chrome.storage.session.set({
       [INFLIGHT_KEY]: Object.fromEntries(inFlight),
       [PENDING_KEY]: Object.fromEntries(unnotified),
+      [HISTORY_KEY]: history,
     });
   } catch (e) { /* storage unavailable */ }
+}
+
+/**
+ * Record an outcome both as "needs reporting" and in the durable log.
+ *
+ * The popup reads the log; the badge and toast read the pending set. Keeping
+ * them separate is what lets a result survive being shown.
+ */
+function recordOutcome(downloadId, outcome) {
+  unnotified.set(downloadId, outcome);
+  history = [{ downloadId, ...outcome }, ...history.filter((h) => h.downloadId !== downloadId)]
+    .slice(0, HISTORY_MAX);
+  persistState();
+  updateBadge();
 }
 
 function updateBadge() {
@@ -333,7 +356,7 @@ async function reconcileDownloads() {
       ok = await libraryHasVersion(info.modelId, info.versionId);
     }
 
-    unnotified.set(downloadId, {
+    recordOutcome(downloadId, {
       // This worker never saw the transfer's outcome — it only knows the
       // progress record is gone. Finding the version proves success, but NOT
       // finding it proves nothing (the index lags, or the user deleted it), so
@@ -347,9 +370,6 @@ async function reconcileDownloads() {
     });
     console.debug('[LoraBridge] reconciled orphaned download:', downloadId, 'ok=' + ok);
   }
-
-  persistState();
-  updateBadge();
 }
 
 /** Tri-state: true / false, or null when it genuinely cannot be determined. */
@@ -497,7 +517,7 @@ async function handleDownloadModel({ modelId, versionId, modelName }) {
       inFlight.delete(downloadId);
       // Record the outcome before resolving, so a page that is about to be
       // closed still has it waiting for whoever looks next.
-      unnotified.set(downloadId, {
+      recordOutcome(downloadId, {
         ok: !entry.error,
         error: entry.error || null,
         // Set when the transfer was refused for a reason that is not a failure.
@@ -509,8 +529,6 @@ async function handleDownloadModel({ modelId, versionId, modelName }) {
         versionId: info.versionId ?? null,
         at: Date.now(),
       });
-      persistState();
-      updateBadge();
       markSettled();
     });
 
@@ -650,6 +668,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       return { success: true, downloads: out };
+    })(), sendResponse);
+    return true;
+  }
+
+  if (message.type === 'DOWNLOAD_HISTORY') {
+    // The durable log. Unlike CLAIM_NOTICES this does not consume anything, so
+    // the popup can be reopened and still show what happened.
+    respond((async () => {
+      await hydrate();
+      return { success: true, history: history.slice(0, HISTORY_MAX) };
     })(), sendResponse);
     return true;
   }

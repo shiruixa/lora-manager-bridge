@@ -323,10 +323,30 @@
 }
 
 .lb-bubble-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   font-weight: 700;
   font-size: 11px;
   color: #a0aec0;
   margin-bottom: 6px;
+}
+
+.lb-bubble-close {
+  border: none;
+  background: transparent;
+  color: #718096;
+  font-size: 12px;
+  line-height: 1;
+  padding: 1px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.lb-bubble-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #e2e8f0;
 }
 
 .lb-bubble-item { margin-top: 8px; }

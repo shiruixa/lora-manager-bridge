@@ -98,25 +98,42 @@ document.addEventListener('DOMContentLoaded', async () => {
   // log: running transfers update in place, finished ones append and stay put
   // for the life of the popup.
 
-  const logEntries = [];        // newest first
-  const LOG_MAX = 12;
-  let logSeq = 0;
+  const logEntries = [];        // newest first; running rows are rebuilt each poll
+  const LOG_MAX = 15;
+
+  // Past outcomes come from the worker, not from what this popup happens to
+  // have seen — otherwise closing and reopening the popup would show an empty
+  // log, and the results would be gone for good.
+  let pastEntries = [];
 
   function renderLog() {
     const el = document.getElementById('notices');
     const listEl = document.getElementById('notices-list');
     const countEl = document.getElementById('notices-count');
 
-    if (!logEntries.length) {
+    // Running transfers first, then the durable history behind them.
+    const rows = [
+      ...logEntries,
+      ...pastEntries.map((h) => ({
+        kind: 'done',
+        ok: h.ok,
+        label: h.ok === false ? friendly(h.error)
+             : h.ok === true ? (h.note || h.fileName || '下载完成')
+             : '下载已结束，请到 LoRA Manager 确认',
+        at: h.at,
+      })),
+    ].slice(0, LOG_MAX);
+
+    if (!rows.length) {
       el.hidden = true;
       return;
     }
     el.hidden = false;
 
-    const running = logEntries.filter((e) => e.kind === 'active').length;
+    const running = rows.filter((e) => e.kind === 'active').length;
     countEl.textContent = running ? `进行中 ${running}` : '';
 
-    listEl.innerHTML = logEntries.map((e) => {
+    listEl.innerHTML = rows.map((e) => {
       const time = e.at ? fmtTime(e.at) : '';
       if (e.kind === 'active') {
         const hasNumbers = e.progress != null;
