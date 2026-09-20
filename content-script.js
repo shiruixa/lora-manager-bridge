@@ -485,6 +485,9 @@
 
       if (st.finished) {
         release();
+        // This page is about to report the outcome itself, so stop it being
+        // reported a second time from the popup or another tab.
+        send('ACK_DOWNLOAD', { downloadId });
         // "The transfer ended" is not the same as "the file arrived" — a
         // download CivitAI rejects also ends. A real failure has already been
         // reported above via st.error, so reaching here means the server
@@ -816,6 +819,37 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════
+  // DOWNLOAD NOTICES FROM OTHER TABS
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * Report downloads that finished with nobody watching.
+   *
+   * The tab that started a download may have been closed before it finished —
+   * the transfer carries on server-side, but its progress UI is gone with the
+   * page. Those outcomes wait in the background until a page claims them, which
+   * is where they surface: whichever CivitAI page is being looked at next.
+   */
+  async function claimNotices() {
+    const res = await send('CLAIM_NOTICES');
+    const notices = (res && res.notices) || [];
+    if (!notices.length) return;
+
+    // Most recent first, and only name a couple so a burst can't bury the page.
+    notices.sort((a, b) => (b.at || 0) - (a.at || 0));
+    for (const n of notices.slice(0, 3)) {
+      toast(n.ok
+        ? '✅ 下载完成' + (n.fileName ? '：' + n.fileName : '')
+        : '❌ 下载失败：' + friendlyError(n.error));
+    }
+    if (notices.length > 3) {
+      setTimeout(() => toast(`（另有 ${notices.length - 3} 个下载已结束）`), 2400);
+    }
+    // The badge may now be stale on the page we just landed on.
+    updateDetailBadge();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
   // DEBUG
   // ═══════════════════════════════════════════════════════════════════
 
@@ -842,6 +876,16 @@
   // ═══════════════════════════════════════════════════════════════════
   // START
   // ═══════════════════════════════════════════════════════════════════
+
+  // Pick up any download that finished while its own tab was closed. Deferred a
+  // moment so the initial badge render isn't competing with the toast.
+  setTimeout(claimNotices, 1200);
+
+  // Coming back to this tab is the moment the user is looking — check again in
+  // case something finished while it was hidden.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') claimNotices();
+  });
 
   I('loaded');
   readConfig();

@@ -90,6 +90,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     typeCountEl.textContent = '--';
   }
 
+  // ── Downloads that finished with nobody watching ───────────────────────
+  //
+  // Claimed here so the result is visible from any tab — including ones that
+  // are not CivitAI pages at all, where no content script is running. The
+  // toolbar badge is what leads here.
+
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'CLAIM_NOTICES' });
+    const notices = (res && res.notices) || [];
+    if (notices.length) {
+      notices.sort((a, b) => (b.at || 0) - (a.at || 0));
+      const noticesEl = document.getElementById('notices');
+      const listEl = document.getElementById('notices-list');
+      listEl.innerHTML = notices.slice(0, 5).map((n) => {
+        const when = n.at ? new Date(n.at) : null;
+        const time = when
+          ? `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`
+          : '';
+        return '<li class="notice ' + (n.ok ? 'notice--ok' : 'notice--err') + '">' +
+          '<span class="notice-icon">' + (n.ok ? '✅' : '❌') + '</span>' +
+          '<span class="notice-text">' + escapeHtml(n.ok ? (n.fileName || '下载完成') : (n.error || '下载失败')) + '</span>' +
+          (time ? '<span class="notice-time">' + time + '</span>' : '') +
+          '</li>';
+      }).join('');
+      noticesEl.hidden = false;
+    }
+  } catch (e) { /* notices are best-effort */ }
+
   // ── What this page looks like to the extension ─────────────────────────
 
   if (scriptAlive) {
@@ -179,6 +207,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // ── Helpers ────────────────────────────────────────────────────────────
+
+  /** Download outcomes come from the server and may contain arbitrary text. */
+  function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = String(s);
+    return d.innerHTML;
+  }
 
   /** Human-readable page description, from the content script's own view. */
   function describePage(s) {

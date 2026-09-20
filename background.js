@@ -231,6 +231,25 @@ const activeByVersion = new Map();
 
 const versionKey = (modelId, versionId) => `${modelId ?? ''}:${versionId ?? ''}`;
 
+// Outcomes nobody has been told about yet.
+//
+// A download runs on the server, so closing the tab that started it does not
+// stop it — but it does destroy the only place the result was going to be
+// shown. Every finished transfer lands here first and is removed only once
+// some page (or the popup) has actually reported it, so the result survives
+// the tab being closed, the page being navigated away, or the worker being
+// restarted mid-transfer.
+const unnotified = new Map();   // downloadId → { ok, fileName, error, at }
+
+function updateBadge() {
+  const count = unnotified.size;
+  const failed = [...unnotified.values()].some((n) => !n.ok);
+  try {
+    chrome.action.setBadgeText({ text: count ? String(count) : '' });
+    chrome.action.setBadgeBackgroundColor({ color: failed ? '#e74c3c' : '#27ae60' });
+  } catch (e) { /* action API unavailable */ }
+}
+
 /**
  * Start a download and return immediately with its id.
  *
@@ -323,13 +342,23 @@ async function handleDownloadModel({ modelId, versionId }) {
     .catch((error) => {
       entry.error = String((error && error.message) || error);
     })
-    .finally(markSettled);
+    .finally(() => {
+      // Record the outcome before resolving, so a page that is about to be
+      // closed still has it waiting for whoever looks next.
+      unnotified.set(downloadId, {
+        ok: !entry.error,
+        error: entry.error || null,
+        fileName: entry.result?.file_name || null,
+        at: Date.now(),
+      });
+      updateBadge();
+      markSettled();
+    });
 
   console.debug('[LoraBridge] download started:', downloadId);
   return { success: true, downloadId };
 }
 
-/**
 /**
  * Poll one download's progress.
  *
@@ -470,6 +499,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'CANCEL_DOWNLOAD') {
     respond(handleCancelDownload(message.payload), sendResponse);
     return true;
+  }
+
+  if (message.type === 'CLAIM_NOTICES') {
+    // Handed to whichever page (or popup) asks first, so exactly one surface
+    // reports each outcome.
+    const notices = [...unnotified.entries()].map(([downloadId, n]) => ({ downloadId, ...n }));
+    unnotified.clear();
+    updateBadge();
+    sendResponse({ success: true, notices });
+    return false;
+  }
+
+  if (message.type === 'ACK_DOWNLOAD') {
+    // The page that was watching this transfer reported it itself.
+    if (unnotified.delete(message.payload?.downloadId)) updateBadge();
+    sendResponse({ success: true });
+    return false;
   }
 
   if (message.type === 'CLEAR_CACHE') {
