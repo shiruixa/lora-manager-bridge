@@ -222,6 +222,15 @@ async function fetchJson(url, timeoutMs) {
 // downloadId → { result, error } for downloads started this session.
 const downloads = new Map();
 
+// "modelId:versionId" → downloadId for transfers still running. This lives here
+// rather than in the content script because it has to be shared: the content
+// script's own guard is per page, so two tabs could each start the same
+// download, and the server saves the second copy under a new name instead of
+// overwriting — leaving duplicates on disk.
+const activeByVersion = new Map();
+
+const versionKey = (modelId, versionId) => `${modelId ?? ''}:${versionId ?? ''}`;
+
 /**
  * Start a download and return immediately with its id.
  *
@@ -246,6 +255,18 @@ async function handleDownloadModel({ modelId, versionId }) {
     return { success: false, error: '缺少 modelId / versionId' };
   }
 
+  // Already downloading this exact version? Hand back the running one and let
+  // the caller attach to it, rather than starting a second copy.
+  const key = versionKey(modelId, versionId);
+  const running = activeByVersion.get(key);
+  if (running) {
+    const e = downloads.get(running);
+    if (e && !e.result && !e.error) {
+      return { success: true, downloadId: running, reused: true };
+    }
+    activeByVersion.delete(key);
+  }
+
   let baseUrl;
   try {
     baseUrl = await getBaseUrl();
@@ -265,18 +286,24 @@ async function handleDownloadModel({ modelId, versionId }) {
 
   // Drop settled entries so a long session doesn't accumulate them.
   for (const [id, e] of downloads) {
-    if (e.result || e.error) downloads.delete(id);
+    if (e.result || e.error) {
+      downloads.delete(id);
+      const k = e.versionKey;
+      if (k && activeByVersion.get(k) === id) activeByVersion.delete(k);
+    }
   }
 
   let markSettled;
   const entry = {
     result: null,
     error: null,
+    versionKey: key,
     // Resolves once the outcome is known, so a poller that has lost the
     // server-side progress entry can wait for the authoritative answer.
     settled: new Promise((resolve) => { markSettled = resolve; }),
   };
   downloads.set(downloadId, entry);
+  activeByVersion.set(key, downloadId);
 
   fetch(url, { headers: { 'Accept': 'application/json' } })
     .then(async (response) => {

@@ -354,7 +354,11 @@
           btn.disabled = false;
           return;
         }
-        toast('⬇️ 已开始下载，文件由 LoRA Manager 放入对应模型目录');
+        // The worker hands back the running download if this version is already
+        // in flight — from another tab, most likely.
+        toast(started.reused
+          ? '⏳ 该版本已在下载中，正在显示它的进度'
+          : '⬇️ 已开始下载，文件由 LoRA Manager 放入对应模型目录');
         startProgressUI(btn, started.downloadId, reqId, modelId, versionId, key);
       } catch (err) {
         downloadsInFlight.delete(key);
@@ -402,10 +406,28 @@
     // Absolute deadline so a stalled transfer can't poll forever.
     const deadline = Date.now() + 60 * 60 * 1000;
     let cancelled = false;
+    let timer = null;
+    let ticking = false;
 
     // Release the in-flight guard on every terminal path, so a retry after a
     // failure is still possible.
-    const release = () => { if (key) downloadsInFlight.delete(key); };
+    const release = () => {
+      if (key) downloadsInFlight.delete(key);
+      clearTimeout(timer);
+      timer = null;
+      ticking = false;
+    };
+
+    // Chrome throttles timers in hidden tabs — down to about once a minute
+    // after a while. Downloads keep running server-side, so the only casualty
+    // is a frozen progress bar; nudge the loop the moment the tab is looked at
+    // again so it catches up immediately instead of a minute later.
+    const onVisible = () => {
+      if (cancelled || document.visibilityState !== 'visible') return;
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (!ticking) tick();
+    };
+    document.addEventListener('visibilitychange', onVisible);
 
     cancelBtn.addEventListener('click', async (e) => {
       e.preventDefault();
@@ -419,6 +441,8 @@
     });
 
     const tick = async () => {
+      if (ticking) return;
+      ticking = true;
       // Page navigated away or a newer request took over — stop silently.
       if (cancelled || reqId !== detailReqId) {
         release();
@@ -479,7 +503,10 @@
         return;
       }
 
-      setTimeout(tick, 1200);
+      // Reschedule — and clear `ticking` only as the next tick begins, so a
+      // visibility nudge cannot start a second concurrent loop.
+      ticking = false;
+      timer = setTimeout(() => { timer = null; tick(); }, 1200);
     };
 
     tick();
