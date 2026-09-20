@@ -300,6 +300,101 @@
 .lb-dl-cancel:hover { background: rgba(231, 76, 60, 0.12); }
 .lb-dl-cancel:disabled { opacity: 0.5; cursor: default; }
 
+/* ── Download bubble ─────────────────────────────────────────────────── */
+/* Present on every CivitAI page so a running download is never invisible. */
+
+.lb-bubble {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147483646;
+  min-width: 240px;
+  max-width: 320px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(17, 24, 39, 0.96);
+  color: #e5e7eb;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 12px;
+  line-height: 1.5;
+  backdrop-filter: blur(6px);
+}
+
+.lb-bubble-head {
+  font-weight: 700;
+  font-size: 11px;
+  color: #a0aec0;
+  margin-bottom: 6px;
+}
+
+.lb-bubble-item { margin-top: 8px; }
+.lb-bubble-item:first-of-type { margin-top: 0; }
+
+.lb-bubble-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.lb-bubble-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 11px;
+}
+
+.lb-bubble-pct {
+  font-weight: 700;
+  color: #27ae60;
+  flex-shrink: 0;
+}
+
+.lb-bubble-bar {
+  display: block;
+  height: 5px;
+  margin: 4px 0 3px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.lb-bubble-bar > i {
+  display: block;
+  height: 100%;
+  background: #27ae60;
+  transition: width 0.5s ease;
+}
+
+.lb-bubble-meta {
+  font-size: 10px;
+  color: #718096;
+}
+
+.lb-bubble-stall {
+  margin-top: 3px;
+  font-size: 10px;
+  color: #f6ad55;
+}
+
+.lb-bubble-done {
+  color: #68d391;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lb-bubble-done.is-err { color: #fc8181; }
+
+/* Inline progress where the download button was, on the model's own page. */
+.lb-dl-inline { margin-left: 8px; }
+
 /* ── Toast ──────────────────────────────────────────────────────────── */
 
 .lb-toast {

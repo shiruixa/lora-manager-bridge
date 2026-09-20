@@ -356,7 +356,7 @@ async function libraryHasVersion(modelId, versionId) {
  * it), so it is intentionally not awaited; `download_id` is generated up front
  * so progress polling can start immediately.
  */
-async function handleDownloadModel({ modelId, versionId }) {
+async function handleDownloadModel({ modelId, versionId, modelName }) {
   if (!modelId && !versionId) {
     return { success: false, error: '缺少 modelId / versionId' };
   }
@@ -425,7 +425,14 @@ async function handleDownloadModel({ modelId, versionId }) {
   // this is the only thing left pointing at it, and reconcileDownloads() will
   // pick it up when a worker next runs.
   await hydrate();
-  inFlight.set(downloadId, { modelId: modelId ?? null, versionId: versionId ?? null, at: Date.now() });
+  // The name is only known to the page that started this — carrying it here
+  // lets every other tab's bubble show something better than an id.
+  inFlight.set(downloadId, {
+    modelId: modelId ?? null,
+    versionId: versionId ?? null,
+    modelName: typeof modelName === 'string' && modelName.trim() ? modelName.trim().slice(0, 120) : null,
+    at: Date.now(),
+  });
   persistState();
 
   fetch(url, { headers: { 'Accept': 'application/json' } })
@@ -606,6 +613,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'CANCEL_DOWNLOAD') {
     respond(handleCancelDownload(message.payload), sendResponse);
+    return true;
+  }
+
+  if (message.type === 'ACTIVE_DOWNLOADS') {
+    // Everything a page needs to show live download state: what is running,
+    // how far along, and whether it has stopped making progress.
+    respond((async () => {
+      await hydrate();
+      const downloads = await Promise.all([...inFlight.entries()].map(async ([downloadId, info]) => {
+        let progress = null;
+        try {
+          progress = await queryEndpoint(`/api/lm/download-progress/${downloadId}`, {}, { noCache: true });
+        } catch (e) {
+          // Progress gone → the transfer is over; reconcile will finish the
+          // bookkeeping, and the page should stop showing it as running.
+          return null;
+        }
+        return {
+          downloadId,
+          modelId: info.modelId,
+          versionId: info.versionId,
+          modelName: info.modelName || null,
+          startedAt: info.at,
+          progress: progress?.progress ?? 0,
+          bytesDownloaded: progress?.bytes_downloaded ?? null,
+          totalBytes: progress?.total_bytes ?? null,
+          bytesPerSecond: progress?.bytes_per_second ?? null,
+        };
+      }));
+      return { success: true, downloads: downloads.filter(Boolean) };
+    })(), sendResponse);
     return true;
   }
 

@@ -286,7 +286,7 @@
 
     // Download button — only when this exact version is not in the library yet.
     if (!matched && downloadsEnabled) {
-      anchor2.appendChild(makeDownloadButton(modelId, versionId, myReqId));
+      anchor2.appendChild(makeDownloadArea(modelId, versionId, myReqId));
     }
 
     // Version list — nothing to show when the library has no version of this model.
@@ -312,207 +312,95 @@
 
   // ═══════════════════════════════════════════════════════════════════
   // DOWNLOAD (detail page)
+  //
+  // The button reflects what is actually happening. When a transfer for this
+  // version is already running it is NOT a button — offering "download" again
+  // is precisely how the same model gets fetched repeatedly, since a running
+  // download is not yet in the library. Live progress lives in the bubble, so
+  // it stays visible on every page, not just this one.
   // ═══════════════════════════════════════════════════════════════════
 
-  /**
-   * "Download to library" button, which becomes a progress bar in place.
-   *
-   * Progress is polled rather than pushed: the server tracks the transfer and
-   * exposes it at /api/lm/download-progress/{id}. The request that starts the
-   * download stays open for the whole transfer, so the worker returns as soon
-   * as it is dispatched and never blocks on it.
-   */
-  // Versions with a download already in flight. The server saves a second
-  // download of the same file under a new name rather than overwriting, so
-  // letting one through twice leaves a duplicate on disk.
-  const downloadsInFlight = new Set();
-  const dlKey = (modelId, versionId) => `${modelId}:${versionId}`;
+  const activeFor = (modelId, versionId) => activeDownloads.find(
+    (d) => String(d.modelId) === String(modelId) && String(d.versionId) === String(versionId)
+  ) || null;
 
-  function makeDownloadButton(modelId, versionId, reqId) {
+  function makeDownloadArea(modelId, versionId, reqId) {
+    const wrap = document.createElement('span');
+    wrap.className = 'lb-dl-area';
+    wrap.dataset.lbModel = String(modelId);
+    wrap.dataset.lbVersion = String(versionId);
+    wrap.dataset.lbReq = String(reqId);
+    renderDownloadArea(wrap);
+    return wrap;
+  }
+
+  function renderDownloadArea(wrap) {
+    const modelId = wrap.dataset.lbModel;
+    const versionId = wrap.dataset.lbVersion;
+    const running = activeFor(modelId, versionId);
+
+    if (running) {
+      const p = Math.max(0, Math.min(100, Math.round(running.progress || 0)));
+      wrap.innerHTML = '<span class="lb-dl lb-dl-inline">' +
+        '<span class="lb-dl-bar"><i style="width:' + p + '%"></i></span>' +
+        '<span class="lb-dl-pct">' + p + '%</span>' +
+        '<button type="button" class="lb-dl-cancel">取消</button></span>';
+
+      wrap.querySelector('.lb-dl-cancel').addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.target.disabled = true;
+        const res = await send('CANCEL_DOWNLOAD', { downloadId: running.downloadId });
+        toast(res && res.success ? '已取消下载（已下载的部分保留）' : '❌ 取消失败');
+      });
+      return;
+    }
+
+    wrap.innerHTML = '';
     const btn = document.createElement('button');
     btn.className = 'lb-dl-btn';
     btn.type = 'button';
     btn.textContent = '⬇️ 下载到库';
-
     btn.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
-
-      // Guard synchronously: the button is only replaced by the progress UI
-      // after the round trip, and a second click in that window would start a
-      // second download.
-      const key = dlKey(modelId, versionId);
-      if (btn.disabled || downloadsInFlight.has(key)) return;
+      // Disable synchronously — the area only re-renders after the round trip.
       btn.disabled = true;
-      downloadsInFlight.add(key);
-
       try {
-        const started = await send('DOWNLOAD_MODEL', { modelId, versionId });
+        const started = await send('DOWNLOAD_MODEL', {
+          modelId,
+          versionId,
+          // So the bubble can name this download on every other page too.
+          modelName: pageModelName(),
+        });
         if (!started || !started.success) {
           toast('❌ ' + friendlyError(started && started.error));
-          downloadsInFlight.delete(key);
           btn.disabled = false;
           return;
         }
-        // The worker hands back the running download if this version is already
-        // in flight — from another tab, most likely.
         toast(started.reused
-          ? '⏳ 该版本已在下载中，正在显示它的进度'
-          : '⬇️ 已开始下载，文件由 LoRA Manager 放入对应模型目录');
-        startProgressUI(btn, started.downloadId, reqId, modelId, versionId, key);
+          ? '⏳ 该版本已在下载中，进度见右下角'
+          : '⬇️ 已开始下载，进度见右下角');
+        // Next poll turns this area into the running state.
+        pollDownloads();
       } catch (err) {
-        downloadsInFlight.delete(key);
         btn.disabled = false;
       }
     });
-
-    return btn;
+    wrap.appendChild(btn);
   }
 
-  /**
-   * Wait until the library actually reports the requested version.
-   *
-   * The only trustworthy completion signal is the server's own state. But an
-   * immediate check lies twice over: our response cache may still hold the
-   * pre-download "not found", and LoRA Manager indexes a new file
-   * asynchronously. So ask uncached, and give it a few seconds to catch up
-   * before concluding anything.
-   */
-  async function confirmDownloaded(modelId, versionId, attempts = 6, intervalMs = 2000) {
-    for (let i = 0; i < attempts; i++) {
-      const r = await send('CHECK_MODEL', { modelId, versionId, noCache: true });
-      if (r && !r.error && !r.unreachable) {
-        if (versionId ? r.matchedVersion : r.found) return true;
-      }
-      if (i < attempts - 1) await new Promise((res) => setTimeout(res, intervalMs));
-    }
-    return false;
+  /** The model's name as shown on this page, for labelling the download. */
+  function pageModelName() {
+    const h1 = document.querySelector('.mantine-Title-root, h1');
+    const t = (h1 && h1.textContent || '').trim();
+    if (t) return t;
+    return (document.title || '').split(/[|·]/)[0].trim() || null;
   }
 
-  function startProgressUI(btn, downloadId, reqId, modelId, versionId, key) {
-    const box = document.createElement('span');
-    box.className = 'lb-dl';
-    box.innerHTML = '<span class="lb-dl-bar"><i></i></span>' +
-      '<span class="lb-dl-pct">0%</span>' +
-      '<span class="lb-dl-meta"></span>' +
-      '<button type="button" class="lb-dl-cancel">取消</button>';
-    btn.replaceWith(box);
-
-    const bar = box.querySelector('.lb-dl-bar > i');
-    const pct = box.querySelector('.lb-dl-pct');
-    const meta = box.querySelector('.lb-dl-meta');
-    const cancelBtn = box.querySelector('.lb-dl-cancel');
-
-    // Absolute deadline so a stalled transfer can't poll forever.
-    const deadline = Date.now() + 60 * 60 * 1000;
-    let cancelled = false;
-    let timer = null;
-    let ticking = false;
-
-    // Release the in-flight guard on every terminal path, so a retry after a
-    // failure is still possible.
-    const release = () => {
-      if (key) downloadsInFlight.delete(key);
-      clearTimeout(timer);
-      timer = null;
-      ticking = false;
-    };
-
-    // Chrome throttles timers in hidden tabs — down to about once a minute
-    // after a while. Downloads keep running server-side, so the only casualty
-    // is a frozen progress bar; nudge the loop the moment the tab is looked at
-    // again so it catches up immediately instead of a minute later.
-    const onVisible = () => {
-      if (cancelled || document.visibilityState !== 'visible') return;
-      if (timer) { clearTimeout(timer); timer = null; }
-      if (!ticking) tick();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-
-    cancelBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      cancelled = true;
-      cancelBtn.disabled = true;
-      const res = await send('CANCEL_DOWNLOAD', { downloadId });
-      toast(res && res.success ? '已取消下载（已下载的部分保留）' : '❌ 取消失败');
-      release();
-      box.remove();
-    });
-
-    const tick = async () => {
-      if (ticking) return;
-      ticking = true;
-      // Page navigated away or a newer request took over — stop silently.
-      if (cancelled || reqId !== detailReqId) {
-        release();
-        box.remove();
-        return;
-      }
-      if (Date.now() > deadline) {
-        release();
-        box.remove();
-        toast('⚠️ 下载状态超时，请到 LoRA Manager 查看');
-        return;
-      }
-
-      const st = await send('DOWNLOAD_STATUS', { downloadId });
-      if (cancelled || reqId !== detailReqId) { release(); box.remove(); return; }
-
-      if (!st || !st.success) {
-        // Worker unreachable — stop polling rather than spamming.
-        release();
-        box.remove();
-        toast('❌ 无法获取下载状态');
-        return;
-      }
-
-      const p = Math.max(0, Math.min(100, Math.round(st.progress || 0)));
-      bar.style.width = p + '%';
-      pct.textContent = p + '%';
-
-      const parts = [];
-      if (st.totalBytes) parts.push(fmtBytes(st.bytesDownloaded || 0) + ' / ' + fmtBytes(st.totalBytes));
-      if (st.bytesPerSecond) parts.push(fmtBytes(st.bytesPerSecond) + '/s');
-      meta.textContent = parts.join(' · ');
-
-      if (st.error) {
-        release();
-        box.remove();
-        toast('❌ ' + friendlyError(st.error));
-        return;
-      }
-
-      if (st.finished) {
-        release();
-        // This page is about to report the outcome itself, so stop it being
-        // reported a second time from the popup or another tab.
-        send('ACK_DOWNLOAD', { downloadId });
-        // "The transfer ended" is not the same as "the file arrived" — a
-        // download CivitAI rejects also ends. A real failure has already been
-        // reported above via st.error, so reaching here means the server
-        // finished and saved; confirm against the library rather than assume.
-        // Keep the box visible while confirming.
-        pct.textContent = '✓';
-        meta.textContent = '核对中…';
-        cancelBtn.remove();
-        const confirmed = await confirmDownloaded(modelId, versionId);
-        box.remove();
-        toast(confirmed
-          ? '✅ 已下载到库'
-          : '⏳ 下载已完成，LoRA Manager 还在索引 —— 稍后点「重新检查本页」即可');
-        // updateDetailBadge() bumps detailReqId, which also retires this tick.
-        updateDetailBadge();
-        return;
-      }
-
-      // Reschedule — and clear `ticking` only as the next tick begins, so a
-      // visibility nudge cannot start a second concurrent loop.
-      ticking = false;
-      timer = setTimeout(() => { timer = null; tick(); }, 1200);
-    };
-
-    tick();
+  /** Re-render every download area on the page from the latest poll. */
+  function refreshDownloadAreas() {
+    document.querySelectorAll('.lb-dl-area').forEach(renderDownloadArea);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -819,38 +707,140 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════
+  // DOWNLOAD BUBBLE
+  //
+  // A download takes minutes and is invisible from the page that started it,
+  // which is how the same model ends up downloaded several times. This panel
+  // is the answer: present on every CivitAI page, showing what is running and
+  // how far along, so the state is never a guess.
+  // ═══════════════════════════════════════════════════════════════════
+
+  const BUBBLE_ID = 'lb-downloads';
+  let activeDownloads = [];
+  let recentFinishes = [];   // { label, ok, until }
+  let bubbleTimer = null;
+
+  function bubbleEl() {
+    let el = document.getElementById(BUBBLE_ID);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = BUBBLE_ID;
+      el.className = 'lb-bubble';
+      el.hidden = true;
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+
+  function renderBubble() {
+    const el = bubbleEl();
+    const now = Date.now();
+    recentFinishes = recentFinishes.filter((f) => f.until > now);
+
+    if (activeDownloads.length === 0 && recentFinishes.length === 0) {
+      el.hidden = true;
+      el.innerHTML = '';
+      return;
+    }
+    el.hidden = false;
+
+    const rows = activeDownloads.map((d) => {
+      const p = Math.max(0, Math.min(100, Math.round(d.progress || 0)));
+      const speed = d.bytesPerSecond ? fmtBytes(d.bytesPerSecond) + '/s' : '';
+      const size = d.totalBytes ? fmtBytes(d.bytesDownloaded || 0) + ' / ' + fmtBytes(d.totalBytes) : '';
+      // A download that has not moved for a while is not dead — CivitAI stalls
+      // and LoRA Manager retries with resume. Say so instead of looking frozen.
+      const stalled = d.stalled
+        ? '<div class="lb-bubble-stall">⚠️ 网络卡顿，正在重试…</div>' : '';
+      return '<div class="lb-bubble-item">' +
+        '<div class="lb-bubble-row"><span class="lb-bubble-name">' +
+          esc(d.label || ('模型 ' + (d.modelId ?? '?'))) + '</span>' +
+        '<span class="lb-bubble-pct">' + p + '%</span></div>' +
+        '<div class="lb-bubble-bar"><i style="width:' + p + '%"></i></div>' +
+        '<div class="lb-bubble-meta">' + esc([size, speed].filter(Boolean).join(' · ')) + '</div>' +
+        stalled +
+        '</div>';
+    }).join('');
+
+    const done = recentFinishes.map((f) =>
+      '<div class="lb-bubble-item lb-bubble-done ' + (f.ok ? '' : 'is-err') + '">' +
+      (f.ok ? '✅ ' : '❌ ') + esc(f.label) + '</div>').join('');
+
+    el.innerHTML =
+      '<div class="lb-bubble-head">' +
+        (activeDownloads.length ? '⬇️ 正在下载 (' + activeDownloads.length + ')' : '下载结果') +
+      '</div>' + rows + done;
+  }
+
+  // Poll fast while something is running, slowly otherwise — the fast path is
+  // what keeps the worker awake and the numbers live.
+  async function pollDownloads() {
+    clearTimeout(bubbleTimer);
+    const res = await send('ACTIVE_DOWNLOADS');
+
+    if (res && res.success) {
+      const seen = new Set(res.downloads.map((d) => d.downloadId));
+      // Anything we were showing that is no longer running has just finished.
+      for (const prev of activeDownloads) {
+        if (!seen.has(prev.downloadId)) {
+          recentFinishes.push({
+            label: prev.label || ('模型 ' + (prev.modelId ?? '?')),
+            ok: true,
+            until: Date.now() + 10000,
+          });
+        }
+      }
+      activeDownloads = res.downloads.map((d) => ({ ...d, ...labelFor(d) }));
+
+      // Stall detection: same byte count across two polls more than ~90s apart.
+      const now = Date.now();
+      for (const d of activeDownloads) {
+        const prev = prevBytes.get(d.downloadId);
+        if (!prev || prev.bytes !== d.bytesDownloaded) {
+          prevBytes.set(d.downloadId, { bytes: d.bytesDownloaded, at: now });
+          d.stalled = false;
+        } else {
+          d.stalled = now - prev.at > 90000;
+        }
+      }
+      refreshDownloadAreas();
+      renderBubble();
+
+      // Pick up outcomes that finished while no page was watching, so the
+      // bubble is the surface that reports them.
+      const claimed = await send('CLAIM_NOTICES');
+      if (claimed && claimed.notices && claimed.notices.length) {
+        for (const n of claimed.notices) {
+          recentFinishes.push({
+            label: n.fileName || n.error || '下载已结束',
+            ok: n.ok === true,
+            until: Date.now() + 12000,
+          });
+        }
+        renderBubble();
+        // A finished download changes this page's badge.
+        updateDetailBadge();
+      }
+    }
+
+    const busy = activeDownloads.length > 0 || recentFinishes.length > 0;
+    bubbleTimer = setTimeout(pollDownloads, busy ? 1500 : 8000);
+  }
+
+  const prevBytes = new Map();
+
+  /** Best available name for a running download, from what the page knows. */
+  function labelFor(d) {
+    return { label: d.modelName || null };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
   // DOWNLOAD NOTICES FROM OTHER TABS
   // ═══════════════════════════════════════════════════════════════════
 
-  /**
-   * Report downloads that finished with nobody watching.
-   *
-   * The tab that started a download may have been closed before it finished —
-   * the transfer carries on server-side, but its progress UI is gone with the
-   * page. Those outcomes wait in the background until a page claims them, which
-   * is where they surface: whichever CivitAI page is being looked at next.
-   */
-  async function claimNotices() {
-    const res = await send('CLAIM_NOTICES');
-    const notices = (res && res.notices) || [];
-    if (!notices.length) return;
-
-    // Most recent first, and only name a couple so a burst can't bury the page.
-    notices.sort((a, b) => (b.at || 0) - (a.at || 0));
-    for (const n of notices.slice(0, 3)) {
-      // ok is tri-state: true succeeded, false failed, null could not be
-      // established (the worker died mid-transfer and the library hasn't
-      // caught up yet).
-      if (n.ok === true) toast('✅ 下载完成' + (n.fileName ? '：' + n.fileName : ''));
-      else if (n.ok === false) toast('❌ ' + friendlyError(n.error));
-      else toast('⏳ 下载已结束，请到 LoRA Manager 查看结果');
-    }
-    if (notices.length > 3) {
-      setTimeout(() => toast(`（另有 ${notices.length - 3} 个下载已结束）`), 2400);
-    }
-    // The badge may now be stale on the page we just landed on.
-    updateDetailBadge();
-  }
+  // Outcomes are reported through the bubble rather than a toast — see the
+  // claim inside pollDownloads(). A toast that vanishes is exactly the kind of
+  // feedback that made a running download look like a failed one.
 
   // ═══════════════════════════════════════════════════════════════════
   // DEBUG
@@ -880,14 +870,15 @@
   // START
   // ═══════════════════════════════════════════════════════════════════
 
-  // Pick up any download that finished while its own tab was closed. Deferred a
-  // moment so the initial badge render isn't competing with the toast.
-  setTimeout(claimNotices, 1200);
+  // One poller drives both the bubble and any download area on the page. It
+  // also keeps the worker alive while a transfer is running, which is what
+  // makes the numbers live.
+  pollDownloads();
 
-  // Coming back to this tab is the moment the user is looking — check again in
-  // case something finished while it was hidden.
+  // Coming back to this tab is the moment the user is looking — refresh now
+  // rather than waiting out a background-tab throttle interval.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') claimNotices();
+    if (document.visibilityState === 'visible') pollDownloads();
   });
 
   I('loaded');
