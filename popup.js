@@ -129,7 +129,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           ok: h.ok,
           label: h.ok === false ? friendly(h.error)
                : h.ok === true ? (h.note || h.fileName || '下载完成')
-               : '下载已结束，请到 LoRA Manager 确认',
+               : '下载已完成，正在等待 LoRA Manager 索引…',
           at: h.at,
         })),
     ].slice(0, LOG_MAX);

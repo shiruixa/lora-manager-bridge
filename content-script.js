@@ -965,7 +965,7 @@
             // you know where to look, so failures get the friendlier phrasing.
             label: n.ok === false ? friendlyError(n.error)
                  : n.ok === true ? (n.note || n.fileName || '下载完成')
-                 : '下载已结束，请到 LoRA Manager 确认',
+                 : '下载已完成，正在等待 LoRA Manager 索引…',
             ok: n.ok,
             until: Date.now() + 12000,
           });

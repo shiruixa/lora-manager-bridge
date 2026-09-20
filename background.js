@@ -237,6 +237,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // ways depending on the library, so match loosely.
 const ALREADY_IN_LIBRARY = /already exists|already in (the )?\w+ library/i;
 
+// How long a transfer may go without ever reporting progress before a missing
+// progress record is taken to mean it is over rather than not yet started.
+const STARTUP_GRACE_MS = 90000;
+
 // ---------------------------------------------------------------------------
 // Surviving the worker
 //
@@ -255,6 +259,7 @@ const ALREADY_IN_LIBRARY = /already exists|already in (the )?\w+ library/i;
 const INFLIGHT_KEY = 'inflightDownloads';   // downloadId → { modelId, versionId, at }
 const PENDING_KEY = 'pendingNotices';       // downloadId → { ok, fileName, error, at }
 const HISTORY_KEY = 'downloadHistory';      // newest-first list of past outcomes
+const UNCONFIRMED_KEY = 'unconfirmedOutcomes';  // downloadId → { modelId, versionId, at }
 
 // Outcomes are kept after they have been reported, so the popup can show a log
 // that survives being closed and reopened. "Claimed once" is the right rule for
@@ -265,15 +270,26 @@ const inFlight = new Map();
 const unnotified = new Map();   // ok: true = succeeded, false = failed, null = unknown
 let history = [];               // newest first
 
+// Outcomes that came back "unknown" and may yet be settled by a later index.
+// Kept apart from `unnotified` because claiming clears that map — and an entry
+// that has already been shown must still be upgradable, otherwise the log sits
+// on "无法确认" forever for a download that plainly worked.
+const unconfirmed = new Map();  // downloadId → { modelId, versionId, at }
+
+// Give up on a late index after this long; anything older is not coming.
+const UNCONFIRMED_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 let hydrated = false;
 
 async function hydrate() {
   if (hydrated) return;
   hydrated = true;
   try {
-    const stored = await chrome.storage.session.get([INFLIGHT_KEY, PENDING_KEY, HISTORY_KEY]);
+    const stored = await chrome.storage.session.get(
+      [INFLIGHT_KEY, PENDING_KEY, HISTORY_KEY, UNCONFIRMED_KEY]);
     for (const [id, v] of Object.entries(stored[INFLIGHT_KEY] || {})) inFlight.set(id, v);
     for (const [id, v] of Object.entries(stored[PENDING_KEY] || {})) unnotified.set(id, v);
+    for (const [id, v] of Object.entries(stored[UNCONFIRMED_KEY] || {})) unconfirmed.set(id, v);
     if (Array.isArray(stored[HISTORY_KEY])) history = stored[HISTORY_KEY];
   } catch (e) {
     console.debug('[LoraBridge] could not restore download state:', e.message);
@@ -287,6 +303,7 @@ function persistState() {
       [INFLIGHT_KEY]: Object.fromEntries(inFlight),
       [PENDING_KEY]: Object.fromEntries(unnotified),
       [HISTORY_KEY]: history,
+      [UNCONFIRMED_KEY]: Object.fromEntries(unconfirmed),
     });
   } catch (e) { /* storage unavailable */ }
 }
@@ -299,7 +316,22 @@ function persistState() {
  */
 function recordOutcome(downloadId, outcome) {
   unnotified.set(downloadId, outcome);
+
+  // Track it for a later upgrade, or drop it once it is no longer unknown.
+  if (outcome.ok === null && outcome.modelId) {
+    unconfirmed.set(downloadId, {
+      modelId: outcome.modelId,
+      versionId: outcome.versionId ?? null,
+      at: outcome.at || Date.now(),
+    });
+  } else {
+    unconfirmed.delete(downloadId);
+  }
+  // Sorted by time rather than by insertion: an outcome can be re-recorded when
+  // it is upgraded from "unconfirmed" to a success, and that must not jump it to
+  // the top of the log.
   history = [{ downloadId, ...outcome }, ...history.filter((h) => h.downloadId !== downloadId)]
+    .sort((a, b) => (b.at || 0) - (a.at || 0))
     .slice(0, HISTORY_MAX);
   persistState();
   updateBadge();
@@ -337,6 +369,14 @@ function updateBadge() {
  */
 async function reconcileDownloads() {
   await hydrate();
+
+  // Outcomes reported as "could not confirm" are not final. The usual reason is
+  // that the library had not indexed the file yet, and indexing can take
+  // minutes — far longer than it is reasonable to block on. So re-check them on
+  // this same heartbeat and upgrade to a definite success when the model turns
+  // up. Without this, a download that plainly worked sat on "不确定" for good.
+  await upgradeUnconfirmed();
+
   if (inFlight.size === 0) return;
 
   for (const [downloadId, info] of [...inFlight]) {
@@ -349,6 +389,16 @@ async function reconcileDownloads() {
       // unreachable) says nothing about the transfer, so leave it in flight
       // rather than settling it on a guess.
       if (e.message !== 'HTTP 404') continue;
+
+      // A 404 has two meanings and they must not be conflated:
+      //   - the record appeared and is now gone  → the transfer really ended
+      //   - the record never appeared            → the transfer has not started
+      //     yet (the server is validating, fetching metadata, choosing a file)
+      // Settling a brand-new transfer on the second reading is how a download
+      // that had barely begun got reported as "finished".
+      if (!info.sawProgress && Date.now() - (info.at || 0) < STARTUP_GRACE_MS) {
+        continue;
+      }
       stillRunning = false;
     }
     if (stillRunning) continue;
@@ -378,6 +428,35 @@ async function reconcileDownloads() {
       at: Date.now(),
     });
     console.debug('[LoraBridge] reconciled orphaned download:', downloadId, 'ok=' + ok);
+  }
+}
+
+/**
+ * Turn "could not confirm" into a definite answer once the library catches up.
+ *
+ * Only ever upgrades to success — a negative stays unknown, because "not in the
+ * library" is never proof of failure.
+ */
+async function upgradeUnconfirmed() {
+  if (unconfirmed.size === 0) return;
+
+  for (const [downloadId, info] of [...unconfirmed]) {
+    if (Date.now() - (info.at || 0) > UNCONFIRMED_MAX_AGE_MS) {
+      unconfirmed.delete(downloadId);
+      continue;
+    }
+    const found = await libraryHasVersion(info.modelId, info.versionId);
+    if (found !== true) continue;
+
+    console.debug('[LoraBridge] late index confirmed', downloadId);
+    // Keep the original timestamp so the log entry does not jump the queue.
+    const original = history.find((h) => h.downloadId === downloadId);
+    recordOutcome(downloadId, {
+      ...(original || {}),
+      ok: true,
+      error: null,
+      at: (original && original.at) || info.at || Date.now(),
+    });
   }
 }
 
@@ -664,6 +743,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           // transfer: the one thing that shows progress is a signal that only
           // exists once progress exists.
           progress = null;
+        }
+
+        // Remember that this transfer has been seen making progress. A later
+        // 404 then unambiguously means "over" rather than "not started yet".
+        if (progress && info.sawProgress !== true) {
+          info.sawProgress = true;
+          persistState();
         }
 
         out.push({
