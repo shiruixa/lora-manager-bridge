@@ -100,6 +100,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const logEntries = [];        // newest first; running rows are rebuilt each poll
   const LOG_MAX = 15;
+  // How long a finished result stays in the log. Long enough to see what just
+  // happened, short enough that it does not become permanent furniture.
+  const LOG_MAX_AGE_MS = 10 * 60 * 1000;
 
   // Past outcomes come from the worker, not from what this popup happens to
   // have seen — otherwise closing and reopening the popup would show an empty
@@ -111,17 +114,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     const listEl = document.getElementById('notices-list');
     const countEl = document.getElementById('notices-count');
 
-    // Running transfers first, then the durable history behind them.
+    // Running transfers first, then recent history behind them.
+    //
+    // Only recent: this is a "what just happened" log, not an archive. Leaving
+    // finished rows up indefinitely meant a "下载完成" line sat there for good,
+    // long after it had been read.
+    const cutoff = Date.now() - LOG_MAX_AGE_MS;
     const rows = [
       ...logEntries,
-      ...pastEntries.map((h) => ({
-        kind: 'done',
-        ok: h.ok,
-        label: h.ok === false ? friendly(h.error)
-             : h.ok === true ? (h.note || h.fileName || '下载完成')
-             : '下载已结束，请到 LoRA Manager 确认',
-        at: h.at,
-      })),
+      ...pastEntries
+        .filter((h) => (h.at || 0) >= cutoff)
+        .map((h) => ({
+          kind: 'done',
+          ok: h.ok,
+          label: h.ok === false ? friendly(h.error)
+               : h.ok === true ? (h.note || h.fileName || '下载完成')
+               : '下载已结束，请到 LoRA Manager 确认',
+          at: h.at,
+        })),
     ].slice(0, LOG_MAX);
 
     if (!rows.length) {
@@ -232,6 +242,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   function fmtTime(ts) {
     const d = new Date(ts);
     return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  }
+
+  // Clearing must actually clear: hiding the rows locally would just bring them
+  // back on the next poll, which reads as the button not working.
+  const clearBtn = document.getElementById('btn-clear-log');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', async () => {
+      await chrome.runtime.sendMessage({ type: 'CLEAR_HISTORY' });
+      pastEntries = [];
+      renderLog();
+    });
   }
 
   pollDownloadLog();

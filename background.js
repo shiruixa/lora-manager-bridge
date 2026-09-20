@@ -695,6 +695,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'CLEAR_HISTORY') {
+    history = [];
+    persistState();
+    sendResponse({ success: true });
+    return false;
+  }
+
   if (message.type === 'CLAIM_NOTICES') {
     // Reconcile first: this is often the first message to reach the worker
     // since the tab that started the download was closed, so any transfer that

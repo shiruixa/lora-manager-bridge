@@ -121,10 +121,30 @@ body {
   gap: 5px;
 }
 
+.notices-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .notices-count {
-  float: right;
   font-weight: 400;
   color: #68d391;
+}
+
+.notices-clear {
+  border: none;
+  background: transparent;
+  color: #718096;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.notices-clear:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #e2e8f0;
 }
 
 .notice {
