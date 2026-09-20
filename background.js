@@ -222,13 +222,13 @@ async function fetchJson(url, timeoutMs) {
 // downloadId → { result, error } for downloads started this session.
 const downloads = new Map();
 
-// "modelId:versionId" → downloadId for transfers still running. This lives here
-// rather than in the content script because it has to be shared: the content
-// script's own guard is per page, so two tabs could each start the same
-// download, and the server saves the second copy under a new name instead of
-// overwriting — leaving duplicates on disk.
-const activeByVersion = new Map();
-
+// Identity of a transfer, for spotting "this exact version is already being
+// downloaded". The duplicate guard itself lives in the persisted `inFlight`
+// set (see below) rather than an in-memory map, because an in-memory guard dies
+// with the worker — and a user retrying an apparently-stalled download would
+// then start a second transfer of the same file. The server does not overwrite
+// on a name clash; it saves the second copy under a new name, so the cost is a
+// duplicate on disk.
 const versionKey = (modelId, versionId) => `${modelId ?? ''}:${versionId ?? ''}`;
 
 // ---------------------------------------------------------------------------
@@ -363,14 +363,29 @@ async function handleDownloadModel({ modelId, versionId }) {
 
   // Already downloading this exact version? Hand back the running one and let
   // the caller attach to it, rather than starting a second copy.
+  //
+  // The check reads the PERSISTED in-flight set, not an in-memory one: the
+  // worker is routinely terminated mid-download, and an in-memory guard dies
+  // with it — so a user retrying an apparently-stalled download would start a
+  // second transfer of the same file, which the server then saves under a new
+  // name (`…-87a8.safetensors`) instead of overwriting.
   const key = versionKey(modelId, versionId);
-  const running = activeByVersion.get(key);
-  if (running) {
-    const e = downloads.get(running);
-    if (e && !e.result && !e.error) {
-      return { success: true, downloadId: running, reused: true };
+  await hydrate();
+  const existing = [...inFlight.entries()]
+    .find(([, v]) => versionKey(v.modelId, v.versionId) === key);
+  if (existing) {
+    // Only reuse if it is genuinely still running. A stale entry left behind by
+    // a dead worker would otherwise make a fresh request look satisfied.
+    let stillRunning = true;
+    try {
+      await queryEndpoint(`/api/lm/download-progress/${existing[0]}`, {}, { noCache: true });
+    } catch (e) {
+      stillRunning = false;
     }
-    activeByVersion.delete(key);
+    if (stillRunning) {
+      return { success: true, downloadId: existing[0], reused: true };
+    }
+    await reconcileDownloads();   // settle the stale one before starting anew
   }
 
   let baseUrl;
@@ -392,24 +407,18 @@ async function handleDownloadModel({ modelId, versionId }) {
 
   // Drop settled entries so a long session doesn't accumulate them.
   for (const [id, e] of downloads) {
-    if (e.result || e.error) {
-      downloads.delete(id);
-      const k = e.versionKey;
-      if (k && activeByVersion.get(k) === id) activeByVersion.delete(k);
-    }
+    if (e.result || e.error) downloads.delete(id);
   }
 
   let markSettled;
   const entry = {
     result: null,
     error: null,
-    versionKey: key,
     // Resolves once the outcome is known, so a poller that has lost the
     // server-side progress entry can wait for the authoritative answer.
     settled: new Promise((resolve) => { markSettled = resolve; }),
   };
   downloads.set(downloadId, entry);
-  activeByVersion.set(key, downloadId);
 
   // Record the transfer BEFORE awaiting it. If this worker is terminated while
   // the download is still running — the normal case when the tab is closed —
