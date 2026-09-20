@@ -839,9 +839,20 @@
         '</div>';
     }).join('');
 
-    const done = recentFinishes.map((f) =>
-      '<div class="lb-bubble-item lb-bubble-done ' + (f.ok ? '' : 'is-err') + '">' +
-      (f.ok ? '✅ ' : '❌ ') + esc(f.label) + '</div>').join('');
+    // Three outcomes, not two. `ok` is tri-state: a transfer that ended without
+    // anyone seeing its result is genuinely unknown, and showing that as a red
+    // failure invents a result — which is exactly what this rewrite is meant to
+    // stop doing.
+    const DONE_LOOK = {
+      true:  { cls: '',           icon: '✅' },
+      false: { cls: 'is-err',     icon: '❌' },
+      null:  { cls: 'is-unknown', icon: '⏳' },
+    };
+    const done = recentFinishes.map((f) => {
+      const look = DONE_LOOK[String(f.ok)] || DONE_LOOK.null;
+      return '<div class="lb-bubble-item lb-bubble-done ' + look.cls + '">' +
+        look.icon + ' ' + esc(f.label) + '</div>';
+    }).join('');
 
     el.innerHTML =
       '<div class="lb-bubble-head">' +
@@ -892,8 +903,11 @@
       if (claimed && claimed.notices && claimed.notices.length) {
         for (const n of claimed.notices) {
           recentFinishes.push({
+            // Keep the tri-state intact — `n.ok === true` would turn "unknown"
+            // into "failed" and show a red cross for a download that may well
+            // have succeeded.
             label: n.fileName || n.error || '下载已结束',
-            ok: n.ok === true,
+            ok: n.ok,
             until: Date.now() + 12000,
           });
           // Ids travel with the notice so the page can refresh its marks for

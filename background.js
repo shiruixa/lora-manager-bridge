@@ -231,6 +231,8 @@ const downloads = new Map();
 // duplicate on disk.
 const versionKey = (modelId, versionId) => `${modelId ?? ''}:${versionId ?? ''}`;
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 // ---------------------------------------------------------------------------
 // Surviving the worker
 //
@@ -316,10 +318,24 @@ async function reconcileDownloads() {
     if (stillRunning) continue;
 
     inFlight.delete(downloadId);
-    const ok = await libraryHasVersion(info.modelId, info.versionId);
+
+    // The transfer being over says nothing about whether the file landed:
+    // LoRA Manager indexes a new file asynchronously, so a check taken the
+    // instant it ends routinely misses it. Give the library a few seconds to
+    // catch up before concluding anything.
+    let ok = await libraryHasVersion(info.modelId, info.versionId);
+    for (let i = 0; ok === false && i < 3; i++) {
+      await sleep(1500);
+      ok = await libraryHasVersion(info.modelId, info.versionId);
+    }
+
     unnotified.set(downloadId, {
+      // `null` when the library still has not caught up. This worker never saw
+      // the transfer's outcome — it only knows the progress record is gone — so
+      // claiming failure would be inventing a result. Reporting "unknown" is
+      // the honest answer.
       ok,
-      error: ok === false ? '下载已结束，但库中没有该版本' : null,
+      error: null,
       fileName: null,
       modelId: info.modelId ?? null,
       versionId: info.versionId ?? null,

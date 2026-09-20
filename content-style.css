@@ -390,7 +390,8 @@
   white-space: nowrap;
 }
 
-.lb-bubble-done.is-err { color: #fc8181; }
+.lb-bubble-done.is-err     { color: #fc8181; }
+.lb-bubble-done.is-unknown { color: #f6ad55; }
 
 /* Inline progress where the download button was, on the model's own page. */
 .lb-dl-inline { margin-left: 8px; }
