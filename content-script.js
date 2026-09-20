@@ -27,7 +27,10 @@
   const removeOldUI = () => {
     const b = document.getElementById(BADGE_ID); if (b) b.remove();
     const l = document.getElementById(LIST_ID); if (l) l.remove();
-    document.querySelectorAll('.lb-dl').forEach((e) => e.remove());
+    // Both the container and the inline progress box — missing the container
+    // left a stale download control behind on every re-render, so switching
+    // versions stacked them up.
+    document.querySelectorAll('.lb-dl-area, .lb-dl').forEach((e) => e.remove());
   };
 
   // Native tooltips don't render newlines — join version rows with a separator.
@@ -127,13 +130,29 @@
     return el;
   }
 
-  // Badges are appended after an await, by which point an SPA re-render may
-  // have replaced the original anchor with a detached node — appending there
-  // would silently show nothing. Re-acquire it, falling back to the original.
-  async function placeBadge(el, fallback) {
-    const anchor = (await titleAnchor()) || fallback;
-    anchor.appendChild(el);
-    return anchor;
+  /**
+   * Put an element immediately after the model title, so it sits beside it.
+   *
+   * Placement is relative to the title ELEMENT, not to some container found by
+   * walking up the tree. That distinction matters: `[class*="Group"]` matches
+   * Mantine's ubiquitous `mantine-Group-root`, so when the expected title
+   * wrapper was absent the old search climbed to a container that also holds
+   * the version switcher — and the control turned up among the version buttons.
+   * Sitting next to the title is correct no matter how it is wrapped, and it
+   * survives an SPA re-render because the element is re-acquired each time.
+   *
+   * Returns the element it landed in, or null when the title never appeared.
+   */
+  async function placeBesideTitle(el, fallback) {
+    const title = await titleEl();
+    const parent = (title && title.parentElement) || fallback;
+    if (!parent) return null;
+    if (title && title.parentElement === parent && parent.contains(title)) {
+      parent.insertBefore(el, title.nextSibling);
+    } else {
+      parent.appendChild(el);
+    }
+    return parent;
   }
 
   // Resolves with the worker's response, or null when the message never
@@ -179,24 +198,32 @@
   // DETAIL / VERSION PAGE
   // ═══════════════════════════════════════════════════════════════════
 
-  function titleAnchor() {
-    return new Promise((r) => {
-      // CivArchive detail page: title is <div class="tracking-tight text-3xl font-bold">
-      const sel = () => {
-        if (IS_ARCHIVE()) {
-          const t = document.querySelector('.tracking-tight.text-3xl.font-bold')
-                 || document.querySelector('h1');
-          return t;
-        }
-        return document.querySelector('.mantine-Title-root') || document.querySelector('h1');
-      };
-      const e = sel();
-      if (e) return r(e.closest('[class*="Stack"], [class*="Group"], [class*="flex items-center"]') || e.parentElement);
-      let t = 0;
+  /**
+   * The model title element, once the page has one.
+   *
+   * Resolves with the ELEMENT (not a container) — see placeBesideTitle for why.
+   */
+  function titleEl() {
+    return new Promise((resolve) => {
+      const sel = () => IS_ARCHIVE()
+        // CivArchive: <div class="tracking-tight text-3xl font-bold">
+        ? (document.querySelector('.tracking-tight.text-3xl.font-bold')
+           || document.querySelector('h1'))
+        : (document.querySelector('.mantine-Title-root') || document.querySelector('h1'));
+
+      const found = sel();
+      if (found) return resolve(found);
+
+      let tries = 0;
       const iv = setInterval(() => {
         const e = sel();
-        if (e) { clearInterval(iv); r(e.closest('[class*="Stack"], [class*="Group"], [class*="flex items-center"]') || e.parentElement); }
-        if (++t > 50) { clearInterval(iv); r(null); }
+        if (e) {
+          clearInterval(iv);
+          resolve(e);
+        } else if (++tries > 50) {
+          clearInterval(iv);
+          resolve(null);
+        }
       }, 200);
     });
   }
@@ -223,12 +250,11 @@
     }
     if (!modelId && !versionId) return;
 
-    const anchor = await titleAnchor();
-    if (!anchor) return;
-
-    // Show loading, clean old UI
+    // Show loading, clean old UI. Placed beside the title rather than in some
+    // ancestor container, so it cannot land among the version buttons.
     removeOldUI();
-    anchor.appendChild(makeBadge('lb-inline-loading', '⏳ 检查库中...'));
+    const anchor = await placeBesideTitle(makeBadge('lb-inline-loading', '⏳ 检查库中...'));
+    if (!anchor) return;
 
     // Query
     I('check: mid=' + modelId + ' vid=' + versionId + ' req#' + myReqId);
@@ -247,14 +273,14 @@
     // No response, an explicit error, or every endpoint down → the server is
     // unreachable. This is not the same as "not in the library".
     if (!r || r.error || r.unreachable) {
-      await placeBadge(makeBadge('lb-inline-error', '⚠️ ComfyUI 未连接'), anchor);
+      await placeBesideTitle(makeBadge('lb-inline-error', '⚠️ ComfyUI 未连接'), anchor);
       return;
     }
 
     // Couldn't resolve modelId (the API can only filter by model id), so there
     // is nothing to query. Say so instead of guessing.
     if (r.needsModelId) {
-      await placeBadge(makeBadge('lb-inline-none', '❓ 无法确定模型 ID'), anchor);
+      await placeBesideTitle(makeBadge('lb-inline-none', '❓ 无法确定模型 ID'), anchor);
       return;
     }
 
@@ -282,11 +308,23 @@
       badgeEl.textContent = '📥 此模型不在库中';
     }
 
-    const anchor2 = await placeBadge(badgeEl, anchor);
+    const anchor2 = await placeBesideTitle(badgeEl, anchor);
+    if (!anchor2) return;
 
-    // Download button — only when this exact version is not in the library yet.
+    // Everything else is inserted immediately after the last thing placed,
+    // starting from the badge — which already sits beside the title. Chaining
+    // this way keeps the whole group next to the title and in order, instead
+    // of appending to whatever container happened to be found.
+    let after = badgeEl;
+    const appendNext = (el) => {
+      const host = after.parentElement || anchor2;
+      host.insertBefore(el, after.nextSibling);
+      after = el;
+    };
+
+    // Download control — only when this exact version is not in the library yet.
     if (!matched && downloadsEnabled) {
-      anchor2.appendChild(makeDownloadArea(modelId, versionId, myReqId));
+      appendNext(makeDownloadArea(modelId, versionId));
     }
 
     // Version list — nothing to show when the library has no version of this model.
@@ -306,7 +344,7 @@
           (v.baseModel ? '<span class="lb-vbase">' + esc(v.baseModel) + '</span>' : '') +
           (isM ? '<span class="lb-vcur">★ 当前</span>' : '') + '</li>';
       }).join('') + '</ul></details>';
-      (anchor2.parentElement || anchor2).insertBefore(listEl, anchor2.nextSibling);
+      appendNext(listEl);
     }
   }
 
@@ -324,12 +362,12 @@
     (d) => String(d.modelId) === String(modelId) && String(d.versionId) === String(versionId)
   ) || null;
 
-  function makeDownloadArea(modelId, versionId, reqId) {
+  function makeDownloadArea(modelId, versionId) {
     const wrap = document.createElement('span');
     wrap.className = 'lb-dl-area';
+    // Read back on every poll to decide between "download" and "downloading".
     wrap.dataset.lbModel = String(modelId);
     wrap.dataset.lbVersion = String(versionId);
-    wrap.dataset.lbReq = String(reqId);
     renderDownloadArea(wrap);
     return wrap;
   }
@@ -822,6 +860,7 @@
       // Anything we were showing that is no longer running has just finished.
       for (const prev of activeDownloads) {
         if (!seen.has(prev.downloadId)) {
+          prevBytes.delete(prev.downloadId);   // don't let the stall tracker grow
           recentFinishes.push({
             label: prev.label || ('模型 ' + (prev.modelId ?? '?')),
             ok: true,

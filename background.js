@@ -306,7 +306,12 @@ async function reconcileDownloads() {
     try {
       await queryEndpoint(`/api/lm/download-progress/${downloadId}`, {}, { noCache: true });
     } catch (e) {
-      stillRunning = false;   // 404 → no longer tracked, i.e. over
+      // ONLY a 404 means the server dropped the transfer — that is the signal
+      // this whole reconciliation rests on. Any other failure (server briefly
+      // unreachable) says nothing about the transfer, so leave it in flight
+      // rather than settling it on a guess.
+      if (e.message !== 'HTTP 404') continue;
+      stillRunning = false;
     }
     if (stillRunning) continue;
 
@@ -482,53 +487,6 @@ async function handleDownloadModel({ modelId, versionId, modelName }) {
 }
 
 /**
- * Poll one download's progress.
- *
- * The server drops progress entries once a transfer ends, so a 404 means the
- * transfer is over — but "over" is not the same as "succeeded": a download
- * rejected by CivitAI also ends this way. So on 404 we wait briefly for our own
- * request to settle, which carries the real outcome.
- */
-async function handleDownloadStatus({ downloadId }) {
-  if (!downloadId) return { success: false, error: '缺少 downloadId' };
-
-  const entry = downloads.get(downloadId);
-  let progressData = null;
-  let stillRunning = true;
-
-  try {
-    progressData = await queryEndpoint(
-      `/api/lm/download-progress/${downloadId}`,
-      {},
-      { noCache: true }
-    );
-  } catch (e) {
-    // 404 → no longer tracked server-side, i.e. the transfer is over.
-    stillRunning = false;
-  }
-
-  // The progress entry is removed just before the response is written, so a
-  // request that is still pending here is about to tell us what happened.
-  if (!stillRunning && entry && !entry.result && !entry.error) {
-    await Promise.race([entry.settled, new Promise((r) => setTimeout(r, 2500))]);
-  }
-
-  const finished = !stillRunning || !!(entry && entry.result);
-  const failed = !!(progressData && progressData.success === false);
-
-  return {
-    success: true,
-    downloadId,
-    finished: finished || failed || entry?.error != null,
-    progress: progressData?.progress ?? (finished ? 100 : 0),
-    bytesDownloaded: progressData?.bytes_downloaded ?? null,
-    totalBytes: progressData?.total_bytes ?? null,
-    bytesPerSecond: progressData?.bytes_per_second ?? null,
-    error: entry?.error || progressData?.error || null,
-  };
-}
-
-/**
  * Cancel an in-flight download. The server keeps partial files.
  */
 async function handleCancelDownload({ downloadId }) {
@@ -613,11 +571,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === 'DOWNLOAD_STATUS') {
-    respond(handleDownloadStatus(message.payload), sendResponse);
-    return true;
-  }
-
   if (message.type === 'CANCEL_DOWNLOAD') {
     respond(handleCancelDownload(message.payload), sendResponse);
     return true;
@@ -687,19 +640,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.debug('[LoraBridge] invalidated', dropped, 'cached queries for model', modelId);
     sendResponse({ success: true, dropped });
     return false;
-  }
-
-  if (message.type === 'ACK_DOWNLOAD') {
-    // The page that was watching this transfer reported it itself.
-    respond((async () => {
-      await hydrate();
-      if (unnotified.delete(message.payload?.downloadId)) {
-        persistState();
-        updateBadge();
-      }
-      return { success: true };
-    })(), sendResponse);
-    return true;
   }
 
   if (message.type === 'CLEAR_CACHE') {
