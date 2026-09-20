@@ -233,6 +233,10 @@ const versionKey = (modelId, versionId) => `${modelId ?? ''}:${versionId ?? ''}`
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// The server refuses a download whose version it already has. Worded a few
+// ways depending on the library, so match loosely.
+const ALREADY_IN_LIBRARY = /already exists|already in (the )?\w+ library/i;
+
 // ---------------------------------------------------------------------------
 // Surviving the worker
 //
@@ -468,7 +472,17 @@ async function handleDownloadModel({ modelId, versionId, modelName }) {
         data = { raw: text };
       }
       if (!response.ok || data?.success === false) {
-        entry.error = data?.error || `HTTP ${response.status}`;
+        const reason = data?.error || `HTTP ${response.status}`;
+        // "Already exists" is a refusal, not a failure: it means the model IS
+        // in the library — the very thing the button was asking for. Reporting
+        // it as an error contradicts the badge on the same page and reads as a
+        // bug. Record it as the success it is, and say what happened.
+        if (ALREADY_IN_LIBRARY.test(reason)) {
+          entry.result = { success: true, already_present: true };
+          entry.note = '该模型已在库中';
+        } else {
+          entry.error = reason;
+        }
       } else {
         entry.result = data;
       }
@@ -486,6 +500,8 @@ async function handleDownloadModel({ modelId, versionId, modelName }) {
       unnotified.set(downloadId, {
         ok: !entry.error,
         error: entry.error || null,
+        // Set when the transfer was refused for a reason that is not a failure.
+        note: entry.note || null,
         fileName: entry.result?.file_name || null,
         // So the page that reports this can also refresh whatever it was
         // showing for that model.

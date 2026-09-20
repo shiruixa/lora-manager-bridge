@@ -916,7 +916,7 @@
             // have succeeded. The server's own wording is accurate but assumes
             // you know where to look, so failures get the friendlier phrasing.
             label: n.ok === false ? friendlyError(n.error)
-                 : n.ok === true ? (n.fileName || '下载完成')
+                 : n.ok === true ? (n.note || n.fileName || '下载完成')
                  : '下载已结束，请到 LoRA Manager 确认',
             ok: n.ok,
             until: Date.now() + 12000,
