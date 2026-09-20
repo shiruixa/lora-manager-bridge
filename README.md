@@ -145,6 +145,7 @@ lora-manager-edge-extension/
 
 ## 版本历史
 
+- **v1.3.1** — 修复下载**成功**却提示「未完成」：完成判定改为跳过缓存并轮询重试，给 LoRA Manager 的异步索引留出时间；措辞改为如实区分「已入库」与「已完成但尚未索引」
 - **v1.3.0** — 补上 LoRA Manager 的第四类库 `other`（VAE / Upscaler / Text Encoder）；徽章改用 `sub_type` 显示具体变体名（LoCon / DoRA / UNET / VAE…）；旧版本无 `other` 库时自动跳过并按需重新探测
 - **v1.2.0** — 新增：Embedding（Textual Inversion）标记；一键下载到库（走 GET 接口避开 ComfyUI 的 Origin 校验，零配置可用；落对应模型根目录，子目录遵循 LoRA Manager 自己的模板设置）；卡片徽章悬停浮层与点击复制本地路径；工具栏弹窗重做（显示本页标记情况、一键打开 LoRA Manager、API Key 状态检测）
 - **v1.1.1** — Bug 修复与优化：ComfyUI 离线时正确提示「未连接」（此前误报「不在库中」）；批量请求失败后自动重试（此前卡片永久漏标）；并发上限真正生效；弹窗刷新改为就地重扫（不重载页面）；深/浅主题适配

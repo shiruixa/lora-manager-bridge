@@ -148,9 +148,14 @@ async function queryEndpoint(endpoint, params = {}, options = {}) {
 
   const cacheKey = url.toString();
 
-  // Polled endpoints (download progress) must never be served from cache.
+  // Forced re-reads (download progress, post-download verification) must never
+  // be served from cache. The fresh answer is written back rather than dropped,
+  // so the caller's own follow-up reads — e.g. re-rendering the badge — see the
+  // new state instead of the stale entry this call just bypassed.
   if (options.noCache) {
-    return fetchJson(cacheKey, REQUEST_TIMEOUT_MS);
+    const data = await fetchJson(cacheKey, REQUEST_TIMEOUT_MS);
+    cache.set(cacheKey, { data, timestamp: Date.now() });
+    return data;
   }
 
   const ttlMs = options.ttlMs ?? config.cacheTTLMs;
@@ -464,7 +469,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
  * Returns `ok: false` when every endpoint failed — meaning the server is
  * unreachable, which is NOT the same as "this model is not in the library".
  */
-async function queryAllEndpoints({ modelId }) {
+async function queryAllEndpoints({ modelId, noCache = false }) {
   // The API only filters by civitai_model_id (there is no version filter), so
   // without a modelId an unfiltered query would return arbitrary library
   // entries and the caller would misread them as "other versions of this model".
@@ -478,7 +483,7 @@ async function queryAllEndpoints({ modelId }) {
         const data = await queryEndpoint(endpoint, {
           civitai_model_id: modelId,
           page_size: PAGE_SIZE,
-        });
+        }, { noCache });
         return { type, label, items: data?.items || [], ok: true };
       } catch (e) {
         return { type, label, items: [], ok: false };
@@ -523,13 +528,13 @@ async function queryAllEndpoints({ modelId }) {
 /**
  * Check if a single model is in the library (LoRA + Checkpoint).
  */
-async function handleCheckModel({ modelId, versionId }) {
+async function handleCheckModel({ modelId, versionId, noCache }) {
   if (!modelId && !versionId) {
     return { found: false, versions: [], foundTypes: [] };
   }
 
   try {
-    const { allVersions, foundTypes, ok, needsModelId } = await queryAllEndpoints({ modelId });
+    const { allVersions, foundTypes, ok, needsModelId } = await queryAllEndpoints({ modelId, noCache });
 
     if (needsModelId) {
       return { found: false, versions: [], foundTypes: [], needsModelId: true };

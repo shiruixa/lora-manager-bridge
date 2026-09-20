@@ -366,16 +366,23 @@
   }
 
   /**
-   * Ask the library whether the requested version is really there now.
+   * Wait until the library actually reports the requested version.
    *
-   * The only trustworthy completion signal: the server's own state, not the
-   * absence of a progress record.
+   * The only trustworthy completion signal is the server's own state. But an
+   * immediate check lies twice over: our response cache may still hold the
+   * pre-download "not found", and LoRA Manager indexes a new file
+   * asynchronously. So ask uncached, and give it a few seconds to catch up
+   * before concluding anything.
    */
-  async function confirmDownloaded(modelId, versionId) {
-    const r = await send('CHECK_MODEL', { modelId, versionId });
-    if (!r || r.error || r.unreachable) return false;
-    if (versionId) return !!r.matchedVersion;
-    return !!r.found;
+  async function confirmDownloaded(modelId, versionId, attempts = 6, intervalMs = 2000) {
+    for (let i = 0; i < attempts; i++) {
+      const r = await send('CHECK_MODEL', { modelId, versionId, noCache: true });
+      if (r && !r.error && !r.unreachable) {
+        if (versionId ? r.matchedVersion : r.found) return true;
+      }
+      if (i < attempts - 1) await new Promise((res) => setTimeout(res, intervalMs));
+    }
+    return false;
   }
 
   function startProgressUI(btn, downloadId, reqId, modelId, versionId, key) {
@@ -454,14 +461,19 @@
 
       if (st.finished) {
         release();
-        box.remove();
         // "The transfer ended" is not the same as "the file arrived" — a
-        // download CivitAI rejects also ends. Ask the library what actually
-        // landed instead of announcing success.
+        // download CivitAI rejects also ends. A real failure has already been
+        // reported above via st.error, so reaching here means the server
+        // finished and saved; confirm against the library rather than assume.
+        // Keep the box visible while confirming.
+        pct.textContent = '✓';
+        meta.textContent = '核对中…';
+        cancelBtn.remove();
         const confirmed = await confirmDownloaded(modelId, versionId);
+        box.remove();
         toast(confirmed
           ? '✅ 已下载到库'
-          : '⚠️ 下载未完成，请查看 LoRA Manager 的下载记录');
+          : '⏳ 下载已完成，LoRA Manager 还在索引 —— 稍后点「重新检查本页」即可');
         // updateDetailBadge() bumps detailReqId, which also retires this tick.
         updateDetailBadge();
         return;
