@@ -172,10 +172,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Running transfers update their existing row rather than piling up.
   async function pollDownloadLog() {
     try {
-      const [active, claimed] = await Promise.all([
+      const [active, , past] = await Promise.all([
         chrome.runtime.sendMessage({ type: 'ACTIVE_DOWNLOADS' }),
+        // Claimed only to clear the toolbar badge. The rows come from the
+        // history below instead, so a result is not listed twice.
         chrome.runtime.sendMessage({ type: 'CLAIM_NOTICES' }),
+        chrome.runtime.sendMessage({ type: 'DOWNLOAD_HISTORY' }),
       ]);
+
+      pastEntries = (past && past.history) || [];
 
       const running = (active && active.downloads) || [];
       const seen = new Set();
@@ -195,23 +200,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (existing) Object.assign(existing, row);
         else logEntries.unshift(row);
       }
-      // Anything no longer running leaves the active rows; its result arrives
-      // through CLAIM_NOTICES below, so nothing is lost.
+      // Anything no longer running leaves the active rows. Its outcome is not
+      // lost: it is already in the history the worker keeps.
       for (let i = logEntries.length - 1; i >= 0; i--) {
         const e = logEntries[i];
         if (e.kind === 'active' && !seen.has(e.id)) logEntries.splice(i, 1);
-      }
-
-      for (const n of (claimed && claimed.notices) || []) {
-        logEntries.unshift({
-          kind: 'done',
-          seq: ++logSeq,
-          ok: n.ok,
-          label: n.ok === false ? friendly(n.error)
-               : n.ok === true ? (n.note || n.fileName || '下载完成')
-               : '下载已结束，请到 LoRA Manager 确认',
-          at: n.at || Date.now(),
-        });
       }
 
       renderLog();

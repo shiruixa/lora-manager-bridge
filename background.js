@@ -307,15 +307,24 @@ function recordOutcome(downloadId, outcome) {
 
 function updateBadge() {
   const notices = [...unnotified.values()];
-  const count = notices.length;
-  // Red only for a confirmed failure; amber when the outcome could not be
-  // established, so a slow index doesn't read as an error.
-  const colour = notices.some((n) => n.ok === false) ? '#e74c3c'
-    : notices.some((n) => n.ok === null) ? '#e67e22'
-    : '#27ae60';
+
   try {
-    chrome.action.setBadgeText({ text: count ? String(count) : '' });
-    if (count) chrome.action.setBadgeBackgroundColor({ color: colour });
+    // A running transfer takes precedence. The in-page bubble only exists on the
+    // three CivitAI hosts, so on any other site this badge is the only sign that
+    // something is downloading — and it is visible from every tab.
+    if (inFlight.size > 0) {
+      chrome.action.setBadgeText({ text: '⬇' + (inFlight.size > 1 ? inFlight.size : '') });
+      chrome.action.setBadgeBackgroundColor({ color: '#3182ce' });
+      return;
+    }
+
+    // Red only for a confirmed failure; amber when the outcome could not be
+    // established, so a slow index doesn't read as an error.
+    const colour = notices.some((n) => n.ok === false) ? '#e74c3c'
+      : notices.some((n) => n.ok === null) ? '#e67e22'
+      : '#27ae60';
+    chrome.action.setBadgeText({ text: notices.length ? String(notices.length) : '' });
+    if (notices.length) chrome.action.setBadgeBackgroundColor({ color: colour });
   } catch (e) { /* action API unavailable */ }
 }
 
@@ -481,6 +490,10 @@ async function handleDownloadModel({ modelId, versionId, modelName }) {
     at: Date.now(),
   });
   persistState();
+  // Signal the transfer on the toolbar icon: the in-page bubble only exists on
+  // the three CivitAI hosts, so on any other site this is the only indication —
+  // and it is visible from every tab.
+  updateBadge();
 
   fetch(url, { headers: { 'Accept': 'application/json' } })
     .then(async (response) => {
