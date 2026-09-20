@@ -330,11 +330,11 @@ async function reconcileDownloads() {
     }
 
     unnotified.set(downloadId, {
-      // `null` when the library still has not caught up. This worker never saw
-      // the transfer's outcome — it only knows the progress record is gone — so
-      // claiming failure would be inventing a result. Reporting "unknown" is
-      // the honest answer.
-      ok,
+      // This worker never saw the transfer's outcome — it only knows the
+      // progress record is gone. Finding the version proves success, but NOT
+      // finding it proves nothing (the index lags, or the user deleted it), so
+      // the negative is reported as "unknown" rather than as a failure.
+      ok: ok === true ? true : null,
       error: null,
       fileName: null,
       modelId: info.modelId ?? null,
@@ -597,28 +597,43 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // how far along, and whether it has stopped making progress.
     respond((async () => {
       await hydrate();
-      const downloads = await Promise.all([...inFlight.entries()].map(async ([downloadId, info]) => {
+      const out = [];
+
+      for (const [downloadId, info] of inFlight) {
+        // A settled request is not running any more; its outcome is recorded by
+        // the download's own .finally().
+        const entry = downloads.get(downloadId);
+        if (entry && (entry.result || entry.error)) continue;
+
         let progress = null;
         try {
           progress = await queryEndpoint(`/api/lm/download-progress/${downloadId}`, {}, { noCache: true });
         } catch (e) {
-          // Progress gone → the transfer is over; reconcile will finish the
-          // bookkeeping, and the page should stop showing it as running.
-          return null;
+          // No progress record *yet* is the normal state: the server validates
+          // the request, fetches metadata and picks a file before any bytes
+          // move. A request it refused never produces one at all. Neither is
+          // evidence the download is over — so keep showing it rather than
+          // dropping it. Dropping was why the bubble stayed empty for the whole
+          // transfer: the one thing that shows progress is a signal that only
+          // exists once progress exists.
+          progress = null;
         }
-        return {
+
+        out.push({
           downloadId,
           modelId: info.modelId,
           versionId: info.versionId,
           modelName: info.modelName || null,
           startedAt: info.at,
-          progress: progress?.progress ?? 0,
+          // null = running, but no numbers yet.
+          progress: progress?.progress ?? null,
           bytesDownloaded: progress?.bytes_downloaded ?? null,
           totalBytes: progress?.total_bytes ?? null,
           bytesPerSecond: progress?.bytes_per_second ?? null,
-        };
-      }));
-      return { success: true, downloads: downloads.filter(Boolean) };
+        });
+      }
+
+      return { success: true, downloads: out };
     })(), sendResponse);
     return true;
   }

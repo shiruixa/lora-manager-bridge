@@ -378,10 +378,11 @@
     const running = activeFor(modelId, versionId);
 
     if (running) {
-      const p = Math.max(0, Math.min(100, Math.round(running.progress || 0)));
+      const hasNumbers = running.progress != null;
+      const p = hasNumbers ? Math.max(0, Math.min(100, Math.round(running.progress))) : 0;
       wrap.innerHTML = '<span class="lb-dl lb-dl-inline">' +
         '<span class="lb-dl-bar"><i style="width:' + p + '%"></i></span>' +
-        '<span class="lb-dl-pct">' + p + '%</span>' +
+        '<span class="lb-dl-pct">' + (hasNumbers ? p + '%' : '准备中') + '</span>' +
         '<button type="button" class="lb-dl-cancel">取消</button></span>';
 
       wrap.querySelector('.lb-dl-cancel').addEventListener('click', async (e) => {
@@ -822,7 +823,11 @@
     el.hidden = false;
 
     const rows = activeDownloads.map((d) => {
-      const p = Math.max(0, Math.min(100, Math.round(d.progress || 0)));
+      // progress is null until the server starts reporting bytes — the request
+      // is being validated, or metadata is being fetched. Showing "准备中…"
+      // is the whole point: the user must be able to see it started.
+      const hasNumbers = d.progress != null;
+      const p = hasNumbers ? Math.max(0, Math.min(100, Math.round(d.progress))) : 0;
       const speed = d.bytesPerSecond ? fmtBytes(d.bytesPerSecond) + '/s' : '';
       const size = d.totalBytes ? fmtBytes(d.bytesDownloaded || 0) + ' / ' + fmtBytes(d.totalBytes) : '';
       // A download that has not moved for a while is not dead — CivitAI stalls
@@ -832,9 +837,12 @@
       return '<div class="lb-bubble-item">' +
         '<div class="lb-bubble-row"><span class="lb-bubble-name">' +
           esc(d.label || ('模型 ' + (d.modelId ?? '?'))) + '</span>' +
-        '<span class="lb-bubble-pct">' + p + '%</span></div>' +
+        '<span class="lb-bubble-pct' + (hasNumbers ? '' : ' is-pending') + '">' +
+          (hasNumbers ? p + '%' : '准备中…') + '</span></div>' +
         '<div class="lb-bubble-bar"><i style="width:' + p + '%"></i></div>' +
-        '<div class="lb-bubble-meta">' + esc([size, speed].filter(Boolean).join(' · ')) + '</div>' +
+        (hasNumbers
+          ? '<div class="lb-bubble-meta">' + esc([size, speed].filter(Boolean).join(' · ')) + '</div>'
+          : '<div class="lb-bubble-meta">等待服务器开始传输…</div>') +
         stalled +
         '</div>';
     }).join('');
@@ -905,8 +913,11 @@
           recentFinishes.push({
             // Keep the tri-state intact — `n.ok === true` would turn "unknown"
             // into "failed" and show a red cross for a download that may well
-            // have succeeded.
-            label: n.fileName || n.error || '下载已结束',
+            // have succeeded. The server's own wording is accurate but assumes
+            // you know where to look, so failures get the friendlier phrasing.
+            label: n.ok === false ? friendlyError(n.error)
+                 : n.ok === true ? (n.fileName || '下载完成')
+                 : '下载已结束，请到 LoRA Manager 确认',
             ok: n.ok,
             until: Date.now() + 12000,
           });

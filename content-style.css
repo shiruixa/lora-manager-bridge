@@ -355,6 +355,11 @@
   flex-shrink: 0;
 }
 
+.lb-bubble-pct.is-pending {
+  color: #a0aec0;
+  font-weight: 400;
+}
+
 .lb-bubble-bar {
   display: block;
   height: 5px;
