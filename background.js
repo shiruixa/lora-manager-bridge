@@ -316,6 +316,8 @@ async function reconcileDownloads() {
       ok,
       error: ok === false ? '下载已结束，但库中没有该版本' : null,
       fileName: null,
+      modelId: info.modelId ?? null,
+      versionId: info.versionId ?? null,
       at: Date.now(),
     });
     console.debug('[LoraBridge] reconciled orphaned download:', downloadId, 'ok=' + ok);
@@ -456,6 +458,7 @@ async function handleDownloadModel({ modelId, versionId, modelName }) {
     .finally(() => {
       // Reached only if this worker survived the whole transfer. If it did not,
       // reconcileDownloads() re-derives the outcome from the server instead.
+      const info = inFlight.get(downloadId) || {};
       inFlight.delete(downloadId);
       // Record the outcome before resolving, so a page that is about to be
       // closed still has it waiting for whoever looks next.
@@ -463,6 +466,10 @@ async function handleDownloadModel({ modelId, versionId, modelName }) {
         ok: !entry.error,
         error: entry.error || null,
         fileName: entry.result?.file_name || null,
+        // So the page that reports this can also refresh whatever it was
+        // showing for that model.
+        modelId: info.modelId ?? null,
+        versionId: info.versionId ?? null,
         at: Date.now(),
       });
       persistState();
@@ -662,6 +669,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return { success: true, notices };
     })(), sendResponse);
     return true;
+  }
+
+  if (message.type === 'INVALIDATE_MODEL') {
+    // A download just changed what the library holds for this model, so any
+    // cached answer about it is now wrong — including the "not found" cached
+    // moments before the download started, which would otherwise pin the page
+    // to the pre-download state for the rest of the cache TTL.
+    const modelId = String(message.payload?.modelId ?? '');
+    let dropped = 0;
+    for (const key of [...cache.keys()]) {
+      if (modelId && key.includes(`civitai_model_id=${modelId}`)) {
+        cache.delete(key);
+        dropped++;
+      }
+    }
+    console.debug('[LoraBridge] invalidated', dropped, 'cached queries for model', modelId);
+    sendResponse({ success: true, dropped });
+    return false;
   }
 
   if (message.type === 'ACK_DOWNLOAD') {

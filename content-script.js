@@ -403,6 +403,45 @@
     document.querySelectorAll('.lb-dl-area').forEach(renderDownloadArea);
   }
 
+  /**
+   * Re-check whatever this page shows for a model whose download just ended.
+   *
+   * A list page marks a card as scanned the moment it answers, and never looks
+   * again — so a card that read "not in library" before the download would keep
+   * saying so forever, even though the model is now there. Clearing just that
+   * model's cards and re-scanning is cheap; the cached answers are dropped too,
+   * or the re-check would be answered from the pre-download cache.
+   */
+  async function refreshModelOnPage(modelId) {
+    if (modelId == null) return;
+    await send('INVALIDATE_MODEL', { modelId });
+
+    const c = ctx();
+    if (c.type === 'list') {
+      let cleared = 0;
+      for (const link of findCardLinks()) {
+        const f = cardFrame(link);
+        if (!f || cardModelId(f) !== Number(modelId)) continue;
+        // Reset the card completely. Clearing only CARD_DONE would leave the
+        // old badge in place and the re-check would stack a second one on top.
+        f.removeAttribute(CARD_DONE);
+        f.classList.remove(CARD_MARKER);
+        f.querySelectorAll('.' + BADGE_CLS + ', .' + OVL_CLS).forEach((e) => e.remove());
+        cleared++;
+      }
+      if (cleared) {
+        I('re-checking', cleared, 'card(s) after download, model', modelId);
+        scanNewCards();
+      }
+      return;
+    }
+
+    // Detail / version page: the badge for this page may have changed.
+    if (Number(modelId) === Number(c.modelId) || c.type === 'version') {
+      updateDetailBadge();
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   // LIST PAGE
   // ═══════════════════════════════════════════════════════════════════
@@ -788,6 +827,8 @@
             ok: true,
             until: Date.now() + 10000,
           });
+          // The library changed — this page's marks for that model are stale.
+          refreshModelOnPage(prev.modelId);
         }
       }
       activeDownloads = res.downloads.map((d) => ({ ...d, ...labelFor(d) }));
@@ -816,10 +857,12 @@
             ok: n.ok === true,
             until: Date.now() + 12000,
           });
+          // Ids travel with the notice so the page can refresh its marks for
+          // that model — including on a list page, where a card may have been
+          // written off as "not in library" before the download started.
+          refreshModelOnPage(n.modelId);
         }
         renderBubble();
-        // A finished download changes this page's badge.
-        updateDetailBadge();
       }
     }
 
