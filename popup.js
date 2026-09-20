@@ -90,40 +90,144 @@ document.addEventListener('DOMContentLoaded', async () => {
     typeCountEl.textContent = '--';
   }
 
-  // ── Downloads that finished with nobody watching ───────────────────────
+  // ── Download log ───────────────────────────────────────────────────────
   //
-  // Claimed here so the result is visible from any tab — including ones that
-  // are not CivitAI pages at all, where no content script is running. The
-  // toolbar badge is what leads here.
+  // The in-page bubble only exists in the tab that started a download, so
+  // switching tabs loses it. The popup is the surface that works from ANY tab
+  // and any site — which makes it the reliable place to look. It behaves like a
+  // log: running transfers update in place, finished ones append and stay put
+  // for the life of the popup.
 
-  try {
-    const res = await chrome.runtime.sendMessage({ type: 'CLAIM_NOTICES' });
-    const notices = (res && res.notices) || [];
-    if (notices.length) {
-      notices.sort((a, b) => (b.at || 0) - (a.at || 0));
-      const noticesEl = document.getElementById('notices');
-      const listEl = document.getElementById('notices-list');
-      // ok is tri-state: true succeeded, false failed, null not determinable.
-      const look = {
-        true: { cls: 'notice--ok', icon: '✅', text: (n) => n.fileName || '下载完成' },
-        false: { cls: 'notice--err', icon: '❌', text: (n) => n.error || '下载失败' },
-        null: { cls: 'notice--unknown', icon: '⏳', text: () => '已结束，请在 LoRA Manager 查看' },
-      };
-      listEl.innerHTML = notices.slice(0, 5).map((n) => {
-        const L = look[String(n.ok)] || look.null;
-        const when = n.at ? new Date(n.at) : null;
-        const time = when
-          ? `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`
-          : '';
-        return '<li class="notice ' + L.cls + '">' +
-          '<span class="notice-icon">' + L.icon + '</span>' +
-          '<span class="notice-text">' + escapeHtml(L.text(n)) + '</span>' +
+  const logEntries = [];        // newest first
+  const LOG_MAX = 12;
+  let logSeq = 0;
+
+  function renderLog() {
+    const el = document.getElementById('notices');
+    const listEl = document.getElementById('notices-list');
+    const countEl = document.getElementById('notices-count');
+
+    if (!logEntries.length) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+
+    const running = logEntries.filter((e) => e.kind === 'active').length;
+    countEl.textContent = running ? `进行中 ${running}` : '';
+
+    listEl.innerHTML = logEntries.map((e) => {
+      const time = e.at ? fmtTime(e.at) : '';
+      if (e.kind === 'active') {
+        const hasNumbers = e.progress != null;
+        const p = hasNumbers ? Math.max(0, Math.min(100, Math.round(e.progress))) : 0;
+        const meta = hasNumbers
+          ? [e.speed ? fmtBytes(e.speed) + '/s' : '', e.total ? fmtBytes(e.done) + ' / ' + fmtBytes(e.total) : '']
+              .filter(Boolean).join(' · ')
+          : '等待服务器开始传输…';
+        return '<li class="notice notice--active">' +
+          '<span class="notice-icon">⬇️</span>' +
+          '<span class="notice-text">' +
+            '<span class="notice-name">' + escapeHtml(e.label) + '</span>' +
+            '<span class="notice-bar"><i style="width:' + p + '%"></i></span>' +
+            '<span class="notice-meta">' + (hasNumbers ? p + '%' : '准备中…') +
+              (meta ? ' · ' + escapeHtml(meta) : '') + '</span>' +
+          '</span>' +
           (time ? '<span class="notice-time">' + time + '</span>' : '') +
           '</li>';
-      }).join('');
-      noticesEl.hidden = false;
-    }
-  } catch (e) { /* notices are best-effort */ }
+      }
+      const look = {
+        true: { cls: 'notice--ok', icon: '✅' },
+        false: { cls: 'notice--err', icon: '❌' },
+        null: { cls: 'notice--unknown', icon: '⏳' },
+      };
+      const L = look[String(e.ok)] || look.null;
+      return '<li class="notice ' + L.cls + '">' +
+        '<span class="notice-icon">' + L.icon + '</span>' +
+        '<span class="notice-text">' + escapeHtml(e.label) + '</span>' +
+        (time ? '<span class="notice-time">' + time + '</span>' : '') +
+        '</li>';
+    }).join('');
+
+    if (logEntries.length > LOG_MAX) logEntries.length = LOG_MAX;
+  }
+
+  // Running transfers update their existing row rather than piling up.
+  async function pollDownloadLog() {
+    try {
+      const [active, claimed] = await Promise.all([
+        chrome.runtime.sendMessage({ type: 'ACTIVE_DOWNLOADS' }),
+        chrome.runtime.sendMessage({ type: 'CLAIM_NOTICES' }),
+      ]);
+
+      const running = (active && active.downloads) || [];
+      const seen = new Set();
+      for (const d of running) {
+        seen.add(d.downloadId);
+        const existing = logEntries.find((e) => e.kind === 'active' && e.id === d.downloadId);
+        const row = {
+          kind: 'active',
+          id: d.downloadId,
+          label: d.modelName || ('模型 ' + (d.modelId ?? '?')),
+          progress: d.progress,
+          speed: d.bytesPerSecond,
+          done: d.bytesDownloaded,
+          total: d.totalBytes,
+          at: existing ? existing.at : Date.now(),
+        };
+        if (existing) Object.assign(existing, row);
+        else logEntries.unshift(row);
+      }
+      // Anything no longer running leaves the active rows; its result arrives
+      // through CLAIM_NOTICES below, so nothing is lost.
+      for (let i = logEntries.length - 1; i >= 0; i--) {
+        const e = logEntries[i];
+        if (e.kind === 'active' && !seen.has(e.id)) logEntries.splice(i, 1);
+      }
+
+      for (const n of (claimed && claimed.notices) || []) {
+        logEntries.unshift({
+          kind: 'done',
+          seq: ++logSeq,
+          ok: n.ok,
+          label: n.ok === false ? friendly(n.error)
+               : n.ok === true ? (n.note || n.fileName || '下载完成')
+               : '下载已结束，请到 LoRA Manager 确认',
+          at: n.at || Date.now(),
+        });
+      }
+
+      renderLog();
+    } catch (e) { /* the log is best-effort */ }
+  }
+
+  /** Server wording, phrased for someone who does not know where to look. */
+  function friendly(msg) {
+    const s = String(msg || '');
+    if (/default \w+ root path not set/i.test(s)) return '请先在 LoRA Manager 设置里指定默认模型目录';
+    if (/early access/i.test(s)) return '该模型需付费早期访问，暂时无法下载';
+    if (/already exists/i.test(s)) return '该模型已在库中';
+    return s || '下载失败';
+  }
+
+  function fmtBytes(n) {
+    if (!n && n !== 0) return '';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    let v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return v.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+  }
+
+  function fmtTime(ts) {
+    const d = new Date(ts);
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  }
+
+  pollDownloadLog();
+  // Live while the popup is open — that is the whole point of putting it here.
+  const logTimer = setInterval(pollDownloadLog, 1200);
+  window.addEventListener('unload', () => clearInterval(logTimer));
 
   // ── What this page looks like to the extension ─────────────────────────
 

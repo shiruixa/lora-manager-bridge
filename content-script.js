@@ -930,8 +930,12 @@
       }
     }
 
-    const busy = activeDownloads.length > 0 || recentFinishes.length > 0;
-    bubbleTimer = setTimeout(pollDownloads, busy ? 1500 : 8000);
+    // A steady short interval, not a long idle one. Switching to another tab
+    // means waiting out whatever interval that tab happened to be in, and a
+    // long idle wait made a running download look like it was not there at all.
+    // This also keeps the worker awake while any CivitAI tab is open, which is
+    // what stops it being torn down mid-transfer.
+    bubbleTimer = setTimeout(pollDownloads, 2000);
   }
 
   const prevBytes = new Map();

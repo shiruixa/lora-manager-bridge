@@ -121,12 +121,59 @@ body {
   gap: 5px;
 }
 
+.notices-count {
+  float: right;
+  font-weight: 400;
+  color: #68d391;
+}
+
 .notice {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 11px;
   line-height: 1.4;
+}
+
+/* Running transfers get a progress bar; finished ones are a single line. */
+.notice--active {
+  align-items: flex-start;
+  padding: 3px 0;
+}
+
+.notice--active .notice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: inherit;
+  white-space: normal;
+}
+
+.notice-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #e2e8f0;
+}
+
+.notice-bar {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.notice-bar > i {
+  display: block;
+  height: 100%;
+  background: #27ae60;
+  transition: width 0.4s ease;
+}
+
+.notice-meta {
+  font-size: 10px;
+  color: #718096;
 }
 
 .notice-icon { flex-shrink: 0; }
