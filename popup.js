@@ -103,14 +103,21 @@ document.addEventListener('DOMContentLoaded', async () => {
       notices.sort((a, b) => (b.at || 0) - (a.at || 0));
       const noticesEl = document.getElementById('notices');
       const listEl = document.getElementById('notices-list');
+      // ok is tri-state: true succeeded, false failed, null not determinable.
+      const look = {
+        true: { cls: 'notice--ok', icon: '✅', text: (n) => n.fileName || '下载完成' },
+        false: { cls: 'notice--err', icon: '❌', text: (n) => n.error || '下载失败' },
+        null: { cls: 'notice--unknown', icon: '⏳', text: () => '已结束，请在 LoRA Manager 查看' },
+      };
       listEl.innerHTML = notices.slice(0, 5).map((n) => {
+        const L = look[String(n.ok)] || look.null;
         const when = n.at ? new Date(n.at) : null;
         const time = when
           ? `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`
           : '';
-        return '<li class="notice ' + (n.ok ? 'notice--ok' : 'notice--err') + '">' +
-          '<span class="notice-icon">' + (n.ok ? '✅' : '❌') + '</span>' +
-          '<span class="notice-text">' + escapeHtml(n.ok ? (n.fileName || '下载完成') : (n.error || '下载失败')) + '</span>' +
+        return '<li class="notice ' + L.cls + '">' +
+          '<span class="notice-icon">' + L.icon + '</span>' +
+          '<span class="notice-text">' + escapeHtml(L.text(n)) + '</span>' +
           (time ? '<span class="notice-time">' + time + '</span>' : '') +
           '</li>';
       }).join('');

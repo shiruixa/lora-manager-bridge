@@ -231,23 +231,110 @@ const activeByVersion = new Map();
 
 const versionKey = (modelId, versionId) => `${modelId ?? ''}:${versionId ?? ''}`;
 
-// Outcomes nobody has been told about yet.
+// ---------------------------------------------------------------------------
+// Surviving the worker
 //
 // A download runs on the server, so closing the tab that started it does not
-// stop it — but it does destroy the only place the result was going to be
-// shown. Every finished transfer lands here first and is removed only once
-// some page (or the popup) has actually reported it, so the result survives
-// the tab being closed, the page being navigated away, or the worker being
-// restarted mid-transfer.
-const unnotified = new Map();   // downloadId → { ok, fileName, error, at }
+// stop it — but it also leaves nothing generating events, and a Manifest V3
+// worker is terminated after ~30s of inactivity. A multi-minute download with
+// no page open therefore outlives the worker that started it, taking the
+// in-flight request and its `.finally()` with it: no badge, no notice.
+//
+// So the bookkeeping is mirrored into `chrome.storage.session`, which outlives
+// the worker within a browser session, and the outcome is re-derived from the
+// server afterwards rather than remembered from a promise that no longer
+// exists. (No extra permission: session storage is part of `storage`.)
+// ---------------------------------------------------------------------------
+
+const INFLIGHT_KEY = 'inflightDownloads';   // downloadId → { modelId, versionId, at }
+const PENDING_KEY = 'pendingNotices';       // downloadId → { ok, fileName, error, at }
+
+const inFlight = new Map();
+const unnotified = new Map();   // ok: true = succeeded, false = failed, null = unknown
+
+let hydrated = false;
+
+async function hydrate() {
+  if (hydrated) return;
+  hydrated = true;
+  try {
+    const stored = await chrome.storage.session.get([INFLIGHT_KEY, PENDING_KEY]);
+    for (const [id, v] of Object.entries(stored[INFLIGHT_KEY] || {})) inFlight.set(id, v);
+    for (const [id, v] of Object.entries(stored[PENDING_KEY] || {})) unnotified.set(id, v);
+  } catch (e) {
+    console.debug('[LoraBridge] could not restore download state:', e.message);
+  }
+  updateBadge();
+}
+
+function persistState() {
+  try {
+    chrome.storage.session.set({
+      [INFLIGHT_KEY]: Object.fromEntries(inFlight),
+      [PENDING_KEY]: Object.fromEntries(unnotified),
+    });
+  } catch (e) { /* storage unavailable */ }
+}
 
 function updateBadge() {
-  const count = unnotified.size;
-  const failed = [...unnotified.values()].some((n) => !n.ok);
+  const notices = [...unnotified.values()];
+  const count = notices.length;
+  // Red only for a confirmed failure; amber when the outcome could not be
+  // established, so a slow index doesn't read as an error.
+  const colour = notices.some((n) => n.ok === false) ? '#e74c3c'
+    : notices.some((n) => n.ok === null) ? '#e67e22'
+    : '#27ae60';
   try {
     chrome.action.setBadgeText({ text: count ? String(count) : '' });
-    chrome.action.setBadgeBackgroundColor({ color: failed ? '#e74c3c' : '#27ae60' });
+    if (count) chrome.action.setBadgeBackgroundColor({ color: colour });
   } catch (e) { /* action API unavailable */ }
+}
+
+/**
+ * Settle downloads whose worker died mid-transfer.
+ *
+ * The server keeps the only durable record of a transfer, so the outcome is
+ * re-derived from it: progress still listed → still running; gone → the
+ * transfer is over, and whether the file landed is answered by the library.
+ */
+async function reconcileDownloads() {
+  await hydrate();
+  if (inFlight.size === 0) return;
+
+  for (const [downloadId, info] of [...inFlight]) {
+    let stillRunning = true;
+    try {
+      await queryEndpoint(`/api/lm/download-progress/${downloadId}`, {}, { noCache: true });
+    } catch (e) {
+      stillRunning = false;   // 404 → no longer tracked, i.e. over
+    }
+    if (stillRunning) continue;
+
+    inFlight.delete(downloadId);
+    const ok = await libraryHasVersion(info.modelId, info.versionId);
+    unnotified.set(downloadId, {
+      ok,
+      error: ok === false ? '下载已结束，但库中没有该版本' : null,
+      fileName: null,
+      at: Date.now(),
+    });
+    console.debug('[LoraBridge] reconciled orphaned download:', downloadId, 'ok=' + ok);
+  }
+
+  persistState();
+  updateBadge();
+}
+
+/** Tri-state: true / false, or null when it genuinely cannot be determined. */
+async function libraryHasVersion(modelId, versionId) {
+  try {
+    const { allVersions, ok } = await queryAllEndpoints({ modelId, noCache: true });
+    if (!ok) return null;                       // server unreachable — do not guess
+    if (!versionId) return allVersions.length > 0;
+    return allVersions.some((v) => v.versionId === versionId);
+  } catch (e) {
+    return null;
+  }
 }
 
 /**
@@ -324,6 +411,14 @@ async function handleDownloadModel({ modelId, versionId }) {
   downloads.set(downloadId, entry);
   activeByVersion.set(key, downloadId);
 
+  // Record the transfer BEFORE awaiting it. If this worker is terminated while
+  // the download is still running — the normal case when the tab is closed —
+  // this is the only thing left pointing at it, and reconcileDownloads() will
+  // pick it up when a worker next runs.
+  await hydrate();
+  inFlight.set(downloadId, { modelId: modelId ?? null, versionId: versionId ?? null, at: Date.now() });
+  persistState();
+
   fetch(url, { headers: { 'Accept': 'application/json' } })
     .then(async (response) => {
       const text = await response.text();
@@ -343,6 +438,9 @@ async function handleDownloadModel({ modelId, versionId }) {
       entry.error = String((error && error.message) || error);
     })
     .finally(() => {
+      // Reached only if this worker survived the whole transfer. If it did not,
+      // reconcileDownloads() re-derives the outcome from the server instead.
+      inFlight.delete(downloadId);
       // Record the outcome before resolving, so a page that is about to be
       // closed still has it waiting for whoever looks next.
       unnotified.set(downloadId, {
@@ -351,6 +449,7 @@ async function handleDownloadModel({ modelId, versionId }) {
         fileName: entry.result?.file_name || null,
         at: Date.now(),
       });
+      persistState();
       updateBadge();
       markSettled();
     });
@@ -502,20 +601,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'CLAIM_NOTICES') {
-    // Handed to whichever page (or popup) asks first, so exactly one surface
-    // reports each outcome.
-    const notices = [...unnotified.entries()].map(([downloadId, n]) => ({ downloadId, ...n }));
-    unnotified.clear();
-    updateBadge();
-    sendResponse({ success: true, notices });
-    return false;
+    // Reconcile first: this is often the first message to reach the worker
+    // since the tab that started the download was closed, so any transfer that
+    // outlived it is only discovered right here.
+    respond((async () => {
+      await reconcileDownloads();
+      // Handed to whichever page (or popup) asks first, so exactly one surface
+      // reports each outcome.
+      const notices = [...unnotified.entries()].map(([downloadId, n]) => ({ downloadId, ...n }));
+      unnotified.clear();
+      persistState();
+      updateBadge();
+      return { success: true, notices };
+    })(), sendResponse);
+    return true;
   }
 
   if (message.type === 'ACK_DOWNLOAD') {
     // The page that was watching this transfer reported it itself.
-    if (unnotified.delete(message.payload?.downloadId)) updateBadge();
-    sendResponse({ success: true });
-    return false;
+    respond((async () => {
+      await hydrate();
+      if (unnotified.delete(message.payload?.downloadId)) {
+        persistState();
+        updateBadge();
+      }
+      return { success: true };
+    })(), sendResponse);
+    return true;
   }
 
   if (message.type === 'CLEAR_CACHE') {
@@ -799,4 +911,28 @@ async function handleGetLibrarySummary() {
   } catch (error) {
     return { counts: {}, total: 0, connected: false, error: error.message };
   }
+}
+
+// ============================================================================
+// STARTUP
+// ============================================================================
+
+// A worker that was terminated mid-download wakes with empty in-memory maps.
+// Restore them, then settle anything that finished while nothing was running —
+// otherwise a download started from a tab that has since been closed would
+// never be reported.
+hydrate().then(reconcileDownloads);
+
+// Recovery also needs the worker to actually wake up. With the tab closed there
+// may be nothing left to generate an event, so the badge would only appear once
+// the user happened to open a page or the popup. A heartbeat settles transfers
+// on its own, so the badge shows up whether or not anyone is interacting.
+// (`alarms` carries no user-facing permission warning.)
+try {
+  chrome.alarms.create('reconcile-downloads', { periodInMinutes: 1 });
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === 'reconcile-downloads') reconcileDownloads();
+  });
+} catch (e) {
+  console.debug('[LoraBridge] alarms unavailable:', e.message);
 }

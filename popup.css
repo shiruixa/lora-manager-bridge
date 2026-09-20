@@ -140,8 +140,9 @@ body {
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
 }
 
-.notice--ok .notice-text   { color: #68d391; }
-.notice--err .notice-text  { color: #fc8181; }
+.notice--ok .notice-text      { color: #68d391; }
+.notice--err .notice-text     { color: #fc8181; }
+.notice--unknown .notice-text { color: #f6ad55; }
 
 .notice-time {
   flex-shrink: 0;

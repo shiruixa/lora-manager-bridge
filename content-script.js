@@ -838,9 +838,12 @@
     // Most recent first, and only name a couple so a burst can't bury the page.
     notices.sort((a, b) => (b.at || 0) - (a.at || 0));
     for (const n of notices.slice(0, 3)) {
-      toast(n.ok
-        ? '✅ 下载完成' + (n.fileName ? '：' + n.fileName : '')
-        : '❌ 下载失败：' + friendlyError(n.error));
+      // ok is tri-state: true succeeded, false failed, null could not be
+      // established (the worker died mid-transfer and the library hasn't
+      // caught up yet).
+      if (n.ok === true) toast('✅ 下载完成' + (n.fileName ? '：' + n.fileName : ''));
+      else if (n.ok === false) toast('❌ ' + friendlyError(n.error));
+      else toast('⏳ 下载已结束，请到 LoRA Manager 查看结果');
     }
     if (notices.length > 3) {
       setTimeout(() => toast(`（另有 ${notices.length - 3} 个下载已结束）`), 2400);
