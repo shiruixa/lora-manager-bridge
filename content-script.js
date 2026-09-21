@@ -713,11 +713,22 @@
     clearTimeout(st); st = setTimeout(scanNewCards, 350);
   }, { passive: true });
 
-  /** Elements this extension puts on the page. */
-  const isOurNode = (n) => !!(n && n.classList && (
-    n.classList.contains(OVL_CLS) ||
-    n.classList.contains(BADGE_CLS) ||
-    n.id === BUBBLE_ID || n.id === 'lb-toast'));
+  /** Elements this extension puts on the page — and their descendants.
+   *
+   *  Descendants matter: the download bubble rebuilds itself with innerHTML on
+   *  every poll, and the badge's popover is nested inside the badge. Matching
+   *  only the added node's own class would call those page mutations, and a
+   *  scan would then be scheduled every 1.5 seconds for as long as a download
+   *  runs. A text node counts as ours when its parent is.
+   *
+   *  Built lazily: BUBBLE_ID is declared further down, and this runs only from
+   *  the observer callback, long after the module has finished initialising. */
+  const isOurNode = (n) => {
+    const el = n && (n.nodeType === 1 ? n : n.parentElement);
+    return !!(el && el.closest && el.closest(
+      '.' + OVL_CLS + ', .' + BADGE_CLS + ', .lb-card-pop, .lb-dl-area, .lb-dl, ' +
+      '#lb-inline-badge, #lb-version-list, #' + BUBBLE_ID + ', #lb-toast'));
+  };
 
   // MutationObserver → list only (new lazy-loaded DOM)
   //
