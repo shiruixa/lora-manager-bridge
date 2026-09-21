@@ -557,6 +557,12 @@
   async function scanNewCards() {
     if (scanLock) return;
     if (serverDown && Date.now() < probeAfter) return;
+    // A probe during a known outage is a reachability check, nothing more. The
+    // spinner is skipped: stamping ⏳ on every card only to take it away again
+    // is itself a visible flash, and the request it stands for is the one most
+    // likely to fail. Recovery is unaffected — badges appear on the pass that
+    // succeeds.
+    const probing = serverDown;
     scanLock = true;
     const todo = [];
     try {
@@ -571,8 +577,8 @@
         f.setAttribute(CARD_PENDING, '1');
       }
       if (!todo.length) return;
-      I('scan:', todo.length, 'new cards');
-      for (const { frame } of todo) {
+      I('scan:', todo.length, probing ? 'cards (探测中，不显示遮罩)' : 'new cards');
+      if (!probing) for (const { frame } of todo) {
         ensureRel(frame);
         const d = document.createElement('div'); d.className = OVL_CLS; d.textContent = '⏳';
         frame.appendChild(d);
