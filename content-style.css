@@ -300,6 +300,12 @@
 .lb-dl-cancel:hover { background: rgba(231, 76, 60, 0.12); }
 .lb-dl-cancel:disabled { opacity: 0.5; cursor: default; }
 
+/* Submitted, but the server has not started the transfer yet. The request can
+   sit in validation for a while, and a control that looks identical to a dead
+   one is what makes a click read as "nothing happened". */
+.lb-dl-pending { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
+.lb-dl-wait { font-size: 11px; color: #b7791f; }
+
 /* ── Download bubble ─────────────────────────────────────────────────── */
 /* Present on every CivitAI page so a running download is never invisible. */
 

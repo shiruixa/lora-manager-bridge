@@ -329,6 +329,10 @@
 
     // Version list — nothing to show when the library has no version of this model.
     if (versions.length > 0) {
+      // The list is re-parsed from HTML, which resets <details> to collapsed.
+      // Carrying the open state over keeps a version switch from folding the
+      // list the user just opened.
+      const wasOpen = !!(document.querySelector('#' + LIST_ID + ' details') || {}).open;
       const listEl = document.createElement('div');
       listEl.id = LIST_ID;
       listEl.className = 'lb-versions';
@@ -344,6 +348,10 @@
           (v.baseModel ? '<span class="lb-vbase">' + esc(v.baseModel) + '</span>' : '') +
           (isM ? '<span class="lb-vcur">★ 当前</span>' : '') + '</li>';
       }).join('') + '</ul></details>';
+      if (wasOpen) {
+        const d = listEl.querySelector('details');
+        if (d) d.open = true;
+      }
       appendNext(listEl);
     }
   }
@@ -368,65 +376,142 @@
     // Read back on every poll to decide between "download" and "downloading".
     wrap.dataset.lbModel = String(modelId);
     wrap.dataset.lbVersion = String(versionId);
+    // Delegated from the wrap, so that re-rendering the children cannot orphan
+    // the handler.
+    //
+    // It does NOT make a click survive the children being replaced mid-press:
+    // measured with real input events, the browser dispatches no click at all
+    // when the node under the cursor is removed between mousedown and mouseup —
+    // not to the wrap, not to the document. That is why renderDownloadArea
+    // rebuilds only on a state change: keeping the node stable is the actual
+    // fix, and this only guards against a rebuild that does happen.
+    wrap.addEventListener('click', onDownloadAreaClick);
     renderDownloadArea(wrap);
     return wrap;
   }
 
+  /**
+   * Re-render one download control.
+   *
+   * Children are rebuilt only when the STATE changes. Rewriting identical
+   * markup on a timer is not free: it restarts the progress bar's CSS
+   * transition (so the bar jumps back to 0 and re-animates every poll), drops
+   * hover and keyboard focus, and throws away a `disabled` flag set moments
+   * earlier — which is how a second click on a just-clicked button got through.
+   */
   function renderDownloadArea(wrap) {
     const modelId = wrap.dataset.lbModel;
     const versionId = wrap.dataset.lbVersion;
     const running = activeFor(modelId, versionId);
+    if (running) delete wrap.dataset.lbPending;
 
-    if (running) {
+    const pending = wrap.dataset.lbPending === '1';
+    const state = running ? 'running' : (pending ? 'pending' : 'idle');
+
+    if (wrap.dataset.lbState !== state) {
+      wrap.dataset.lbState = state;
+      if (state === 'running') {
+        wrap.innerHTML =
+          '<span class="lb-dl lb-dl-inline">' +
+            '<span class="lb-dl-bar"><i></i></span>' +
+            '<span class="lb-dl-pct"></span>' +
+            '<button type="button" class="lb-dl-cancel">取消</button>' +
+          '</span>';
+      } else if (state === 'pending') {
+        wrap.innerHTML =
+          '<span class="lb-dl lb-dl-pending">' +
+            '<span class="lb-dl-wait">⏳ 等待服务器开始传输…</span>' +
+            '<button type="button" class="lb-dl-cancel">取消</button>' +
+          '</span>';
+      } else {
+        const btn = document.createElement('button');
+        btn.className = 'lb-dl-btn';
+        btn.type = 'button';
+        btn.textContent = '⬇️ 下载到库';
+        wrap.appendChild(btn);
+      }
+    }
+
+    // Same state: touch only what changed, so nothing around it is disturbed.
+    if (state === 'running') {
       const hasNumbers = running.progress != null;
       const p = hasNumbers ? Math.max(0, Math.min(100, Math.round(running.progress))) : 0;
-      wrap.innerHTML = '<span class="lb-dl lb-dl-inline">' +
-        '<span class="lb-dl-bar"><i style="width:' + p + '%"></i></span>' +
-        '<span class="lb-dl-pct">' + (hasNumbers ? p + '%' : '准备中') + '</span>' +
-        '<button type="button" class="lb-dl-cancel">取消</button></span>';
+      const bar = wrap.querySelector('.lb-dl-bar > i');
+      const pct = wrap.querySelector('.lb-dl-pct');
+      if (bar) bar.style.width = p + '%';
+      if (pct) pct.textContent = hasNumbers ? p + '%' : '准备中';
+    } else if (state === 'pending') {
+      const wait = wrap.querySelector('.lb-dl-wait');
+      const since = Number(wrap.dataset.lbSince || 0);
+      // Silence for a long time is indistinguishable from a dead click, so say
+      // how long it has been. The server may simply be busy with another
+      // transfer — it starts ours when it gets to it.
+      const secs = since ? Math.floor((Date.now() - since) / 1000) : 0;
+      if (wait) {
+        wait.textContent = secs >= 15
+          ? '⏳ 服务器还没开始传输（' + secs + ' 秒）'
+          : '⏳ 等待服务器开始传输…';
+      }
+    }
+  }
 
-      wrap.querySelector('.lb-dl-cancel').addEventListener('click', async (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        e.target.disabled = true;
-        const res = await send('CANCEL_DOWNLOAD', { downloadId: running.downloadId });
+  /** Delegated from the wrap, so a child rebuild can never orphan the handler. */
+  function onDownloadAreaClick(e) {
+    const wrap = e.currentTarget;
+    const cancel = e.target.closest && e.target.closest('.lb-dl-cancel');
+    if (cancel) {
+      e.preventDefault();
+      e.stopPropagation();
+      cancel.disabled = true;
+      const downloadId = wrap.dataset.lbDownload || (activeFor(wrap.dataset.lbModel, wrap.dataset.lbVersion) || {}).downloadId;
+      send('CANCEL_DOWNLOAD', { downloadId }).then((res) => {
         toast(res && res.success ? '已取消下载（已下载的部分保留）' : '❌ 取消失败');
+        delete wrap.dataset.lbPending;
+        pollDownloads();
       });
       return;
     }
 
-    wrap.innerHTML = '';
-    const btn = document.createElement('button');
-    btn.className = 'lb-dl-btn';
-    btn.type = 'button';
-    btn.textContent = '⬇️ 下载到库';
-    btn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      // Disable synchronously — the area only re-renders after the round trip.
-      btn.disabled = true;
-      try {
-        const started = await send('DOWNLOAD_MODEL', {
-          modelId,
-          versionId,
-          // So the bubble can name this download on every other page too.
-          modelName: pageModelName(),
-        });
-        if (!started || !started.success) {
-          toast('❌ ' + friendlyError(started && started.error));
-          btn.disabled = false;
-          return;
-        }
-        toast(started.reused
-          ? '⏳ 该版本已在下载中，进度见右下角'
-          : '⬇️ 已开始下载，进度见右下角');
-        // Next poll turns this area into the running state.
-        pollDownloads();
-      } catch (err) {
-        btn.disabled = false;
+    const btn = e.target.closest && e.target.closest('.lb-dl-btn');
+    if (!btn || wrap.dataset.lbPending === '1') return;
+    e.preventDefault();
+    e.stopPropagation();
+    startDownload(wrap);
+  }
+
+  async function startDownload(wrap) {
+    const modelId = wrap.dataset.lbModel;
+    const versionId = wrap.dataset.lbVersion;
+
+    // Feedback is local and immediate. The round trip to the worker (and from
+    // there to the server) can take a while, and showing nothing until the next
+    // poll made a click look like it did nothing at all.
+    wrap.dataset.lbPending = '1';
+    wrap.dataset.lbSince = String(Date.now());
+    renderDownloadArea(wrap);
+
+    try {
+      const started = await send('DOWNLOAD_MODEL', {
+        modelId,
+        versionId,
+        // So the bubble can name this download on every other page too.
+        modelName: pageModelName(),
+      });
+      if (!started || !started.success) {
+        delete wrap.dataset.lbPending;
+        renderDownloadArea(wrap);
+        toast('❌ ' + friendlyError(started && started.error));
+        return;
       }
-    });
-    wrap.appendChild(btn);
+      wrap.dataset.lbDownload = started.downloadId || '';
+      toast(started.reused
+        ? '⏳ 该版本已在下载中，进度见右下角'
+        : '⬇️ 已开始下载，进度见右下角');
+      pollDownloads();     // pick the running state up without waiting a tick
+    } catch (err) {
+      delete wrap.dataset.lbPending;
+      renderDownloadArea(wrap);
+    }
   }
 
   /** The model's name as shown on this page, for labelling the download. */
@@ -461,11 +546,7 @@
       for (const link of findCardLinks()) {
         const f = cardFrame(link);
         if (!f || cardModelId(f) !== Number(modelId)) continue;
-        // Reset the card completely. Clearing only CARD_DONE would leave the
-        // old badge in place and the re-check would stack a second one on top.
-        f.removeAttribute(CARD_DONE);
-        f.classList.remove(CARD_MARKER);
-        f.querySelectorAll('.' + BADGE_CLS + ', .' + OVL_CLS).forEach((e) => e.remove());
+        clearCardMarks(f);
         cleared++;
       }
       if (cleared) {
@@ -522,6 +603,20 @@
     return m ? +m[1] : null;
   }
 
+  /**
+   * Strip everything this extension put on a card, so it can be scanned from
+   * scratch. Removing the badge matters as much as the marker: clearing only
+   * CARD_DONE leaves the old badge sitting there for the re-check to stack a
+   * second one on top of.
+   */
+  function clearCardMarks(frame) {
+    frame.removeAttribute(CARD_DONE);
+    frame.removeAttribute(CARD_PENDING);
+    frame.classList.remove(CARD_MARKER);
+    frame.querySelectorAll('.' + BADGE_CLS + ', .' + OVL_CLS).forEach((e) => e.remove());
+    delete frame.dataset.lbMid;
+  }
+
   // Undo a scan attempt: drop the overlay and the pending marker so these
   // cards stay eligible for the next scan.
   function abandon(todo) {
@@ -570,9 +665,16 @@
       for (const link of links) {
         const f = cardFrame(link);
         if (!f || f === document.body) continue;
-        if (f.hasAttribute(CARD_DONE) || f.hasAttribute(CARD_PENDING)) continue;
         const mid = cardModelId(f);
         if (!mid) continue;
+        // CivitAI recycles card elements when the list re-sorts or filters, so
+        // a frame can still be carrying the badge of whatever model it held
+        // before — and CARD_DONE would make it look already answered. The id
+        // the frame was checked for is what makes that detectable. Without it
+        // the only safe response to any URL change was to wipe every badge on
+        // the page, which is the blink this avoids.
+        if (f.dataset.lbMid && f.dataset.lbMid !== String(mid)) clearCardMarks(f);
+        if (f.hasAttribute(CARD_DONE) || f.hasAttribute(CARD_PENDING)) continue;
         todo.push({ frame: f, modelId: mid });
         f.setAttribute(CARD_PENDING, '1');
       }
@@ -609,6 +711,10 @@
         // pass picks it up, rather than marking it done with no badge.
         if (!hit || hit.unknown) { retryNeeded = true; continue; }
 
+        // Remember WHICH model this frame was answered for. If CivitAI later
+        // recycles the element for another model, that mismatch is what tells
+        // the next scan the badge in it is stale.
+        frame.dataset.lbMid = String(modelId);
         frame.setAttribute(CARD_DONE, '1');
         if (hit.found) {
           frame.classList.add(CARD_MARKER);
@@ -632,6 +738,14 @@
           d.appendChild(pop);
 
           ensureRel(frame); frame.appendChild(d); n++;
+        } else if (frame.querySelector('.' + BADGE_CLS) || frame.classList.contains(CARD_MARKER)) {
+          // Answered "not in library" while a badge is still sitting there: the
+          // frame was recycled, or the file is gone from the library. Either
+          // way the badge is now wrong, and only a badge we leave behind is
+          // worse than no badge.
+          clearCardMarks(frame);
+          frame.dataset.lbMid = String(modelId);
+          frame.setAttribute(CARD_DONE, '1');
         }
       }
       if (retryNeeded) scheduleRetry();
@@ -643,12 +757,27 @@
     } finally { scanLock = false; }
   }
 
-  function resetList() {
+  /**
+   * Reset the list page's marks.
+   *
+   * `hard` wipes every badge. That is right when the answers themselves are no
+   * longer trustworthy (the cache was cleared, the host changed) — but not for
+   * a URL change, where the library has not moved: sort and filter changes
+   * re-use these very card elements, and a full wipe made the page blink and
+   * re-query everything on every click of a filter. In the soft case the
+   * per-frame model id does the safety work instead: a frame that reappears
+   * holding a different model is detected and re-checked on its own.
+   */
+  function resetList(hard) {
+    document.querySelectorAll('[' + CARD_PENDING + ']').forEach((e) => e.removeAttribute(CARD_PENDING));
+    if (!hard) return;
     document.querySelectorAll('.' + CARD_MARKER).forEach((e) => e.classList.remove(CARD_MARKER));
     document.querySelectorAll('.' + BADGE_CLS).forEach((e) => e.remove());
     document.querySelectorAll('.' + OVL_CLS).forEach((e) => e.remove());
-    document.querySelectorAll('[' + CARD_DONE + ']').forEach((e) => e.removeAttribute(CARD_DONE));
-    document.querySelectorAll('[' + CARD_PENDING + ']').forEach((e) => e.removeAttribute(CARD_PENDING));
+    document.querySelectorAll('[' + CARD_DONE + ']').forEach((e) => {
+      e.removeAttribute(CARD_DONE);
+      delete e.dataset.lbMid;
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -777,6 +906,9 @@
   async function rescan() {
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     await send('CLEAR_CACHE');
+    // The cache is gone, so every badge on this page is now an assumption —
+    // including any that a plain URL change would have been happy to keep.
+    resetList(true);
     lastUrl = '';
     lastDetailHref = '';
     handlePage();
@@ -852,44 +984,84 @@
       el.id = BUBBLE_ID;
       el.className = 'lb-bubble';
       el.hidden = true;
+      // Delegated once, on the root. The panel is re-rendered from the poll, so
+      // a listener attached to the ✕ button itself was thrown away with the
+      // button every couple of seconds — the same way the download button lost
+      // its clicks.
+      el.addEventListener('click', (e) => {
+        const close = e.target.closest && e.target.closest('.lb-bubble-close');
+        if (!close) return;
+        e.preventDefault();
+        e.stopPropagation();
+        recentFinishes = [];
+        renderBubble();
+      });
       document.body.appendChild(el);
     }
     return el;
   }
 
+  // Structure of the last render — which rows exist, their labels and their
+  // state. Byte counts and percentages are deliberately NOT part of it.
+  let bubbleSig = '';
+
+  /**
+   * Re-render the bubble.
+   *
+   * The panel is rebuilt only when its STRUCTURE changes; the numbers are then
+   * written into the existing nodes. Re-parsing the whole panel on every poll
+   * restarted the progress bar's transition each time (so it animated from 0
+   * every couple of seconds instead of sliding), and destroyed the ✕ button
+   * while the user was aiming at it.
+   */
   function renderBubble() {
     const el = bubbleEl();
     const now = Date.now();
     recentFinishes = recentFinishes.filter((f) => f.until > now);
 
     if (activeDownloads.length === 0 && recentFinishes.length === 0) {
-      el.hidden = true;
-      el.innerHTML = '';
+      if (!el.hidden || bubbleSig) {
+        el.hidden = true;
+        el.innerHTML = '';
+        bubbleSig = '';
+      }
       return;
     }
     el.hidden = false;
 
+    const sig = activeDownloads.map((d) => [
+      d.downloadId,
+      d.progress != null ? 'N' : 'P',
+      d.stalled ? 'S' : '',
+      d.label || '',
+    ].join('|')).join(',') + '#' +
+      recentFinishes.map((f) => f.label + ':' + f.ok).join(',') + '#' + activeDownloads.length;
+
+    if (sig !== bubbleSig) {
+      bubbleSig = sig;
+      el.innerHTML = buildBubbleHtml();
+    }
+    updateBubbleNumbers(el);
+  }
+
+  function buildBubbleHtml() {
     const rows = activeDownloads.map((d) => {
       // progress is null until the server starts reporting bytes — the request
       // is being validated, or metadata is being fetched. Showing "准备中…"
       // is the whole point: the user must be able to see it started.
       const hasNumbers = d.progress != null;
       const p = hasNumbers ? Math.max(0, Math.min(100, Math.round(d.progress))) : 0;
-      const speed = d.bytesPerSecond ? fmtBytes(d.bytesPerSecond) + '/s' : '';
-      const size = d.totalBytes ? fmtBytes(d.bytesDownloaded || 0) + ' / ' + fmtBytes(d.totalBytes) : '';
       // A download that has not moved for a while is not dead — CivitAI stalls
       // and LoRA Manager retries with resume. Say so instead of looking frozen.
       const stalled = d.stalled
         ? '<div class="lb-bubble-stall">⚠️ 网络卡顿，正在重试…</div>' : '';
-      return '<div class="lb-bubble-item">' +
+      return '<div class="lb-bubble-item" data-lb-dl="' + escAttr(d.downloadId) + '">' +
         '<div class="lb-bubble-row"><span class="lb-bubble-name">' +
           esc(d.label || ('模型 ' + (d.modelId ?? '?'))) + '</span>' +
         '<span class="lb-bubble-pct' + (hasNumbers ? '' : ' is-pending') + '">' +
           (hasNumbers ? p + '%' : '准备中…') + '</span></div>' +
         '<div class="lb-bubble-bar"><i style="width:' + p + '%"></i></div>' +
-        (hasNumbers
-          ? '<div class="lb-bubble-meta">' + esc([size, speed].filter(Boolean).join(' · ')) + '</div>'
-          : '<div class="lb-bubble-meta">等待服务器开始传输…</div>') +
+        '<div class="lb-bubble-meta">' + (hasNumbers ? '' : '等待服务器开始传输…') + '</div>' +
         stalled +
         '</div>';
     }).join('');
@@ -913,21 +1085,32 @@
     // dismiss affordance: the text stays long enough to read, and one click
     // clears it. A running transfer gets no ✕ — it is not dismissable.
     const hasRunning = activeDownloads.length > 0;
-    el.innerHTML =
-      '<div class="lb-bubble-head">' +
+    return '<div class="lb-bubble-head">' +
         (hasRunning ? '⬇️ 正在下载 (' + activeDownloads.length + ')' : '下载结果') +
         (hasRunning ? '' : '<button type="button" class="lb-bubble-close" title="关闭">✕</button>') +
       '</div>' + rows + done;
+  }
 
-    if (!hasRunning) {
-      const close = el.querySelector('.lb-bubble-close');
-      if (close) {
-        close.addEventListener('click', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          recentFinishes = [];
-          renderBubble();
-        });
+  /** Write the numbers into the rows that already exist. */
+  function updateBubbleNumbers(el) {
+    for (const d of activeDownloads) {
+      const row = el.querySelector('[data-lb-dl="' + CSS.escape(String(d.downloadId)) + '"]');
+      if (!row) continue;
+      const hasNumbers = d.progress != null;
+      const p = hasNumbers ? Math.max(0, Math.min(100, Math.round(d.progress))) : 0;
+      const bar = row.querySelector('.lb-bubble-bar > i');
+      const pct = row.querySelector('.lb-bubble-pct');
+      const meta = row.querySelector('.lb-bubble-meta');
+      if (bar) bar.style.width = p + '%';
+      if (pct) {
+        pct.textContent = hasNumbers ? p + '%' : '准备中…';
+        pct.classList.toggle('is-pending', !hasNumbers);
+      }
+      if (meta && hasNumbers) {
+        const speed = d.bytesPerSecond ? fmtBytes(d.bytesPerSecond) + '/s' : '';
+        const size = d.totalBytes ? fmtBytes(d.bytesDownloaded || 0) + ' / ' + fmtBytes(d.totalBytes) : '';
+        const text = [size, speed].filter(Boolean).join(' · ');
+        if (meta.textContent !== text) meta.textContent = text;
       }
     }
   }
@@ -940,6 +1123,28 @@
    * download's result stayed on screen forever with nothing left to update or
    * age it out.
    */
+  // How often to ask the worker what is running.
+  //
+  // A fixed 2s beat is only right while something is actually transferring.
+  // Every open CivitAI tab otherwise asked twice every 2 seconds forever —
+  // messages that wake the service worker, which then makes its own requests to
+  // the server — for a page that had nothing to show. The cadence now follows
+  // what the page is doing.
+  const POLL_ACTIVE_MS = 2000;    // a transfer is running: progress must be live
+  const POLL_SETTLING_MS = 3000;  // submitted, or showing results and ageing them out
+  const POLL_IDLE_MS = 6000;      // nothing to show in this tab
+  const POLL_HIDDEN_MS = 15000;   // not visible: nothing on screen to keep current
+
+  function nextPollDelay() {
+    if (document.hidden) return POLL_HIDDEN_MS;
+    if (activeDownloads.length > 0) return POLL_ACTIVE_MS;
+    // A submitted download has no progress record yet, and its control has to
+    // keep counting seconds until the server picks it up.
+    if (document.querySelector('.lb-dl-pending')) return POLL_ACTIVE_MS;
+    if (recentFinishes.length > 0) return POLL_SETTLING_MS;
+    return POLL_IDLE_MS;
+  }
+
   async function pollDownloads() {
     clearTimeout(bubbleTimer);
     try {
@@ -950,7 +1155,7 @@
       // Always re-render and always reschedule. The render is what expires
       // finished rows, so it must happen even when a poll fails.
       renderBubble();
-      bubbleTimer = setTimeout(pollDownloads, 2000);
+      bubbleTimer = setTimeout(pollDownloads, nextPollDelay());
     }
   }
 

@@ -366,8 +366,25 @@ function updateBadge() {
  * The server keeps the only durable record of a transfer, so the outcome is
  * re-derived from it: progress still listed → still running; gone → the
  * transfer is over, and whether the file landed is answered by the library.
+ *
+ * A full sweep is not cheap: it queries the progress endpoint once per in-flight
+ * transfer, and for a transfer that has ended it waits out up to 4.5 seconds of
+ * retries while the library indexes the new file. Every page poll asks for it
+ * (CLAIM_NOTICES), on a 2-second beat per open tab — so it ran constantly
+ * without being any more prompt. What it actually adds is catching a transfer
+ * whose worker died, which does not need sub-second freshness; callers that ask
+ * for it repeatedly should use reconcileIfDue() instead.
  */
+const RECONCILE_MIN_INTERVAL_MS = 8000;
+let lastReconcileAt = 0;
+
+async function reconcileIfDue() {
+  if (Date.now() - lastReconcileAt < RECONCILE_MIN_INTERVAL_MS) return;
+  await reconcileDownloads();
+}
+
 async function reconcileDownloads() {
+  lastReconcileAt = Date.now();
   await hydrate();
 
   // Outcomes reported as "could not confirm" are not final. The usual reason is
@@ -723,13 +740,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // how far along, and whether it has stopped making progress.
     respond((async () => {
       await hydrate();
-      const out = [];
 
-      for (const [downloadId, info] of inFlight) {
+      // Fetched concurrently. In sequence, N transfers cost N round trips
+      // end-to-end inside one 2-second poll — the last one's progress was
+      // always that much staler than the first's, and with the server busy the
+      // whole poll could overrun its own interval.
+      const out = (await Promise.all([...inFlight].map(async ([downloadId, info]) => {
         // A settled request is not running any more; its outcome is recorded by
         // the download's own .finally().
         const entry = downloads.get(downloadId);
-        if (entry && (entry.result || entry.error)) continue;
+        if (entry && (entry.result || entry.error)) return null;
 
         let progress = null;
         try {
@@ -752,7 +772,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           persistState();
         }
 
-        out.push({
+        return {
           downloadId,
           modelId: info.modelId,
           versionId: info.versionId,
@@ -763,8 +783,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           bytesDownloaded: progress?.bytes_downloaded ?? null,
           totalBytes: progress?.total_bytes ?? null,
           bytesPerSecond: progress?.bytes_per_second ?? null,
-        });
-      }
+        };
+      }))).filter(Boolean);
 
       return { success: true, downloads: out };
     })(), sendResponse);
@@ -789,11 +809,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'CLAIM_NOTICES') {
-    // Reconcile first: this is often the first message to reach the worker
-    // since the tab that started the download was closed, so any transfer that
-    // outlived it is only discovered right here.
+    // Reconcile first (rate-limited — see reconcileIfDue): this is often the
+    // first message to reach the worker since the tab that started the download
+    // was closed, so any transfer that outlived it is only discovered here.
     respond((async () => {
-      await reconcileDownloads();
+      await reconcileIfDue();
       // Handed to whichever page (or popup) asks first, so exactly one surface
       // reports each outcome.
       const notices = [...unnotified.entries()].map(([downloadId, n]) => ({ downloadId, ...n }));
