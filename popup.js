@@ -60,7 +60,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else {
       statusEl.textContent = '❌ 未连接';
       statusEl.className = 'status-value status--disconnected';
-      showHint('ComfyUI 未运行，或设置里的地址不对。页面上的标记无法显示。');
+      showHint('ComfyUI 未运行，或设置里的地址不对。页面标记已暂停检查（每 20 秒探测一次），启动后会自动恢复。');
     }
   } catch (e) {
     statusEl.textContent = '❌ 无法通信';
