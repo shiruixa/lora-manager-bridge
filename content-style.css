@@ -413,6 +413,10 @@
   color: #f6ad55;
 }
 
+/* A transfer that restarted is not an error — it is the recovery working — so
+   it is stated in neutral grey rather than the stall's warning colour. */
+.lb-bubble-restart { color: #a0aec0; }
+
 .lb-bubble-done {
   color: #68d391;
   font-weight: 600;

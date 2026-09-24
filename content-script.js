@@ -1033,6 +1033,7 @@
       d.downloadId,
       d.progress != null ? 'N' : 'P',
       d.stalled ? 'S' : '',
+      d.restarted ? 'R' : '',
       d.label || '',
     ].join('|')).join(',') + '#' +
       recentFinishes.map((f) => f.label + ':' + f.ok).join(',') + '#' + activeDownloads.length;
@@ -1055,6 +1056,10 @@
       // and LoRA Manager retries with resume. Say so instead of looking frozen.
       const stalled = d.stalled
         ? '<div class="lb-bubble-stall">⚠️ 网络卡顿，正在重试…</div>' : '';
+      // The count went backwards, so the transfer is re-fetching from an
+      // earlier offset. Without this the bar looks like it is running backwards.
+      const restarted = d.restarted
+        ? '<div class="lb-bubble-stall lb-bubble-restart">↻ 连接中断，已从更早的位置重新传输</div>' : '';
       return '<div class="lb-bubble-item" data-lb-dl="' + escAttr(d.downloadId) + '">' +
         '<div class="lb-bubble-row"><span class="lb-bubble-name">' +
           esc(d.label || ('模型 ' + (d.modelId ?? '?'))) + '</span>' +
@@ -1062,7 +1067,7 @@
           (hasNumbers ? p + '%' : '准备中…') + '</span></div>' +
         '<div class="lb-bubble-bar"><i style="width:' + p + '%"></i></div>' +
         '<div class="lb-bubble-meta">' + (hasNumbers ? '' : '等待服务器开始传输…') + '</div>' +
-        stalled +
+        stalled + restarted +
         '</div>';
     }).join('');
 
@@ -1106,10 +1111,20 @@
         pct.textContent = hasNumbers ? p + '%' : '准备中…';
         pct.classList.toggle('is-pending', !hasNumbers);
       }
-      if (meta && hasNumbers) {
-        const speed = d.bytesPerSecond ? fmtBytes(d.bytesPerSecond) + '/s' : '';
-        const size = d.totalBytes ? fmtBytes(d.bytesDownloaded || 0) + ' / ' + fmtBytes(d.totalBytes) : '';
-        const text = [size, speed].filter(Boolean).join(' · ');
+      if (meta) {
+        // Elapsed time is included in BOTH states, and it is the number that
+        // answers the question a percentage cannot: "is this thing still
+        // moving, or has it been sitting there for ten minutes?" Speeds
+        // fluctuate and bytes stall, but this only ever counts up.
+        const bits = [];
+        if (hasNumbers) {
+          if (d.totalBytes) bits.push(fmtBytes(d.bytesDownloaded || 0) + ' / ' + fmtBytes(d.totalBytes));
+          if (d.bytesPerSecond) bits.push(fmtBytes(d.bytesPerSecond) + '/s');
+        } else {
+          bits.push('等待服务器开始传输…');
+        }
+        if (d.startedAt) bits.push('已用 ' + fmtDuration((Date.now() - d.startedAt) / 1000));
+        const text = bits.join(' · ');
         if (meta.textContent !== text) meta.textContent = text;
       }
     }
@@ -1180,7 +1195,8 @@
       // Anything we were showing that is no longer running has just finished.
       for (const prev of activeDownloads) {
         if (!seen.has(prev.downloadId)) {
-          prevBytes.delete(prev.downloadId);   // don't let the stall tracker grow
+          prevBytes.delete(prev.downloadId);      // don't let the trackers grow
+          restartedAt.delete(prev.downloadId);
           recentFinishes.push({
             label: prev.label || ('模型 ' + (prev.modelId ?? '?')),
             ok: true,
@@ -1192,15 +1208,33 @@
       }
       activeDownloads = res.downloads.map((d) => ({ ...d, ...labelFor(d) }));
 
-      // Stall detection: same byte count across two polls more than ~90s apart.
+      // Stall detection: the byte count has not moved across two polls at least
+      // STALL_WINDOW_MS apart.
       const now = Date.now();
       for (const d of activeDownloads) {
         const prev = prevBytes.get(d.downloadId);
+
+        // Bytes going BACKWARDS means the transfer restarted — the server
+        // reconnected and is re-fetching from an earlier offset. That is not a
+        // stall, and with nothing said about it the progress bar simply runs
+        // backwards for no visible reason. Held for a few seconds so it is
+        // readable rather than flashing past on one poll.
+        //
+        // The timestamp lives in a Map, not on `d`: activeDownloads is rebuilt
+        // from fresh objects on every poll, so anything stashed on the entry is
+        // gone by the next one.
+        if (prev && d.bytesDownloaded != null && prev.bytes != null
+            && d.bytesDownloaded < prev.bytes) {
+          restartedAt.set(d.downloadId, now);
+        }
+        const ra = restartedAt.get(d.downloadId);
+        d.restarted = !!ra && now - ra < 10000;
+
         if (!prev || prev.bytes !== d.bytesDownloaded) {
           prevBytes.set(d.downloadId, { bytes: d.bytesDownloaded, at: now });
           d.stalled = false;
         } else {
-          d.stalled = now - prev.at > 90000;
+          d.stalled = now - prev.at > STALL_WINDOW_MS;
         }
       }
       refreshDownloadAreas();
@@ -1231,7 +1265,25 @@
     }
   }
 
-  const prevBytes = new Map();
+  const prevBytes = new Map();      // downloadId → { bytes, at }, for stall detection
+  const restartedAt = new Map();    // downloadId → when its byte count last went backwards
+
+  // How long a byte count may sit unchanged before it counts as stalled.
+  //
+  // The server gives up on a dead connection after its OWN timeout and resumes
+  // from the last byte received — 30s on this machine, 120s out of the box. So
+  // this window only needs to be a little longer than that: the message
+  // ("network stalled, retrying") is wrong if it shows up long before the
+  // server acts, and useless if it lags minutes behind.
+  const STALL_WINDOW_MS = 45000;
+
+  /** Seconds → "2:13" / "1:02:13", for showing how long a transfer has run. */
+  function fmtDuration(seconds) {
+    const s = Math.max(0, Math.floor(seconds));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    const pad = (n) => String(n).padStart(2, '0');
+    return h ? h + ':' + pad(m) + ':' + pad(sec) : m + ':' + pad(sec);
+  }
 
   /** Best available name for a running download, from what the page knows. */
   function labelFor(d) {
