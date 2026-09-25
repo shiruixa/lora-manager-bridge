@@ -370,6 +370,12 @@
     (d) => String(d.modelId) === String(modelId) && String(d.versionId) === String(versionId)
   ) || null;
 
+  // Clicked, recorded, not sent yet — the worker keeps only one transfer on the
+  // wire and hands it the next one when it frees up.
+  const queuedFor = (modelId, versionId) => queuedDownloads.find(
+    (q) => String(q.modelId) === String(modelId) && String(q.versionId) === String(versionId)
+  ) || null;
+
   function makeDownloadArea(modelId, versionId) {
     const wrap = document.createElement('span');
     wrap.className = 'lb-dl-area';
@@ -403,10 +409,11 @@
     const modelId = wrap.dataset.lbModel;
     const versionId = wrap.dataset.lbVersion;
     const running = activeFor(modelId, versionId);
-    if (running) delete wrap.dataset.lbPending;
+    const waiting = queuedFor(modelId, versionId);
+    if (running || waiting) delete wrap.dataset.lbPending;
 
     const pending = wrap.dataset.lbPending === '1';
-    const state = running ? 'running' : (pending ? 'pending' : 'idle');
+    const state = running ? 'running' : (waiting ? 'queued' : (pending ? 'pending' : 'idle'));
 
     if (wrap.dataset.lbState !== state) {
       wrap.dataset.lbState = state;
@@ -421,6 +428,12 @@
         wrap.innerHTML =
           '<span class="lb-dl lb-dl-pending">' +
             '<span class="lb-dl-wait">⏳ 等待服务器开始传输…</span>' +
+            '<button type="button" class="lb-dl-cancel">取消</button>' +
+          '</span>';
+      } else if (state === 'queued') {
+        wrap.innerHTML =
+          '<span class="lb-dl lb-dl-queued">' +
+            '<span class="lb-dl-wait"></span>' +
             '<button type="button" class="lb-dl-cancel">取消</button>' +
           '</span>';
       } else {
@@ -440,6 +453,15 @@
       const pct = wrap.querySelector('.lb-dl-pct');
       if (bar) bar.style.width = p + '%';
       if (pct) pct.textContent = hasNumbers ? p + '%' : '准备中';
+    } else if (state === 'queued') {
+      // Written in place rather than only at build time: the position changes
+      // as the queue drains, and that is the one thing worth watching here.
+      const wait = wrap.querySelector('.lb-dl-wait');
+      if (wait) {
+        const n = waiting ? waiting.position : 0;
+        const text = n ? '⏸ 排队中（第 ' + n + ' 位）' : '⏸ 排队中';
+        if (wait.textContent !== text) wait.textContent = text;
+      }
     } else if (state === 'pending') {
       const wait = wrap.querySelector('.lb-dl-wait');
       const since = Number(wrap.dataset.lbSince || 0);
@@ -463,6 +485,16 @@
       e.preventDefault();
       e.stopPropagation();
       cancel.disabled = true;
+      // A queued item has no download id — nothing was ever sent. It is dropped
+      // from the queue instead of cancelled on the server.
+      if (wrap.dataset.lbState === 'queued') {
+        send('CANCEL_QUEUED', { modelId: wrap.dataset.lbModel, versionId: wrap.dataset.lbVersion })
+          .then((res) => {
+            toast(res && res.success ? '已从队列移除' : '❌ 取消失败');
+            pollDownloads();
+          });
+        return;
+      }
       const downloadId = wrap.dataset.lbDownload || (activeFor(wrap.dataset.lbModel, wrap.dataset.lbVersion) || {}).downloadId;
       send('CANCEL_DOWNLOAD', { downloadId }).then((res) => {
         toast(res && res.success ? '已取消下载（已下载的部分保留）' : '❌ 取消失败');
@@ -504,9 +536,11 @@
         return;
       }
       wrap.dataset.lbDownload = started.downloadId || '';
-      toast(started.reused
-        ? '⏳ 该版本已在下载中，进度见右下角'
-        : '⬇️ 已开始下载，进度见右下角');
+      toast(started.queued
+        ? '⏸ 已加入队列（第 ' + (started.position || 1) + ' 位）—— 前面的下完就自动开始'
+        : (started.reused
+          ? '⏳ 该版本已在下载中，进度见右下角'
+          : '⬇️ 已开始下载，进度见右下角'));
       pollDownloads();     // pick the running state up without waiting a tick
     } catch (err) {
       delete wrap.dataset.lbPending;
@@ -974,6 +1008,7 @@
 
   const BUBBLE_ID = 'lb-downloads';
   let activeDownloads = [];
+  let queuedDownloads = [];   // { position, modelId, versionId, modelName }
   let recentFinishes = [];   // { label, ok, until }
   let bubbleTimer = null;
 
@@ -1019,7 +1054,7 @@
     const now = Date.now();
     recentFinishes = recentFinishes.filter((f) => f.until > now);
 
-    if (activeDownloads.length === 0 && recentFinishes.length === 0) {
+    if (activeDownloads.length === 0 && queuedDownloads.length === 0 && recentFinishes.length === 0) {
       if (!el.hidden || bubbleSig) {
         el.hidden = true;
         el.innerHTML = '';
@@ -1029,7 +1064,8 @@
     }
     el.hidden = false;
 
-    const sig = activeDownloads.map((d) => [
+    const sig = queuedDownloads.map((q) => 'q' + q.position + (q.modelName || '')).join(',') + '#' +
+      activeDownloads.map((d) => [
       d.downloadId,
       d.progress != null ? 'N' : 'P',
       d.stalled ? 'S' : '',
@@ -1086,14 +1122,29 @@
         look.icon + ' ' + esc(f.label) + '</div>';
     }).join('');
 
+    // Queued downloads are listed too, and separately: they are requested but
+    // not moving, and a row that looks like a stalled transfer would be a lie.
+    const waiting = queuedDownloads.map((q) =>
+      '<div class="lb-bubble-item lb-bubble-queued">' +
+        '<div class="lb-bubble-row">' +
+          '<span class="lb-bubble-name">⏸ ' +
+            esc(q.modelName || ('模型 ' + (q.modelId ?? '?'))) + '</span>' +
+          '<span class="lb-bubble-qpos">第 ' + q.position + ' 位</span>' +
+        '</div>' +
+      '</div>').join('');
+
     // Once nothing is running the bubble is just a result notice, so it gets a
     // dismiss affordance: the text stays long enough to read, and one click
-    // clears it. A running transfer gets no ✕ — it is not dismissable.
-    const hasRunning = activeDownloads.length > 0;
-    return '<div class="lb-bubble-head">' +
-        (hasRunning ? '⬇️ 正在下载 (' + activeDownloads.length + ')' : '下载结果') +
+    // clears it. Anything still downloading or queued gets no ✕ — work is
+    // pending, and dismissing the panel would hide it.
+    const hasRunning = activeDownloads.length > 0 || queuedDownloads.length > 0;
+    const head = activeDownloads.length
+      ? '⬇️ 正在下载 (' + activeDownloads.length + ')' +
+        (queuedDownloads.length ? ' · 排队 ' + queuedDownloads.length : '')
+      : (queuedDownloads.length ? '⏸ 排队中 (' + queuedDownloads.length + ')' : '下载结果');
+    return '<div class="lb-bubble-head">' + head +
         (hasRunning ? '' : '<button type="button" class="lb-bubble-close" title="关闭">✕</button>') +
-      '</div>' + rows + done;
+      '</div>' + rows + waiting + done;
   }
 
   /** Write the numbers into the rows that already exist. */
@@ -1151,8 +1202,13 @@
   const POLL_HIDDEN_MS = 15000;   // not visible: nothing on screen to keep current
 
   function nextPollDelay() {
+    // Work in flight outranks visibility: a background tab still has to drive
+    // the queue forward, keep the toolbar badge honest and show its own bubble
+    // the moment the user looks. It is when there is NOTHING to report that a
+    // hidden tab has no business waking the worker every two seconds — which is
+    // the chatter this backoff exists to remove, not the active case.
+    if (activeDownloads.length > 0 || queuedDownloads.length > 0) return POLL_ACTIVE_MS;
     if (document.hidden) return POLL_HIDDEN_MS;
-    if (activeDownloads.length > 0) return POLL_ACTIVE_MS;
     // A submitted download has no progress record yet, and its control has to
     // keep counting seconds until the server picks it up.
     if (document.querySelector('.lb-dl-pending')) return POLL_ACTIVE_MS;
@@ -1184,7 +1240,7 @@
     const res = await send('ACTIVE_DOWNLOADS');
 
     if (!res || !res.success || !Array.isArray(res.downloads)) {
-      if (++failedPolls >= 3) activeDownloads = [];
+      if (++failedPolls >= 3) { activeDownloads = []; queuedDownloads = []; }
       return;
     }
     failedPolls = 0;
@@ -1207,6 +1263,7 @@
         }
       }
       activeDownloads = res.downloads.map((d) => ({ ...d, ...labelFor(d) }));
+      queuedDownloads = Array.isArray(res.queue) ? res.queue : [];
 
       // Stall detection: the byte count has not moved across two polls at least
       // STALL_WINDOW_MS apart.

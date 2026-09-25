@@ -134,12 +134,21 @@ const downloadHits = () => requests.filter((u) => u.includes('/api/lm/download-m
   console.log('\n  全部请求顺序：');
   requests.forEach((h, i) => console.log(`    ${i}. ` + h.replace(/^https?:\/\/[^/]+/, '').slice(0, 90)));
 
-  console.log('\n[1] 第二个模型必须真的发出下载请求');
-  check('A 已开始下载', a && a.success === true, JSON.stringify(a));
-  check('B 也开始了自己的下载（不被 A 挡住）',
-    b && b.success === true && !b.reused, JSON.stringify(b));
-  check('服务器收到两个不同的下载请求',
-    hits.length === 2 && hits[0] !== hits[1], `收到 ${hits.length} 个`);
+  console.log('\n[1] 一次只压一条：A 立刻开始，B 排队而不是并发发出');
+  check('A 已开始下载', a && a.success === true && !a.queued, JSON.stringify(a));
+  // Used to assert B went straight out. It does not any more — serialising is
+  // the point (see QUEUE_MAX_CONCURRENT). What matters is that B is taken, not
+  // rejected and not lost.
+  check('B 被接受并排队', b && b.success === true && b.queued === true, JSON.stringify(b));
+  check('B 的位置是第 1 位', b && b.position === 1, JSON.stringify(b));
+  check('服务器只收到 A 一个下载请求',
+    hits.length === 1, `收到 ${hits.length} 个：${hits.map((h) => h.match(/model_id=(\d+)/)[1]).join(',')}`);
+
+  console.log('\n[1b] 正在下载的那个版本再点一次，仍然复用而不是新开');
+  const a2 = await send(chrome, 'DOWNLOAD_MODEL', { modelId: 100, versionId: 1000, modelName: 'A again' });
+  check('同一版本被识别为已在下载中',
+    a2 && a2.success === true && a2.reused === true, JSON.stringify(a2));
+  check('没有因此多出下载请求', downloadHits().length === 1, `${downloadHits().length} 个`);
 
   // What does the worker think is in flight? ACTIVE_DOWNLOADS iterates the
   // very map the duplicate guard searches, so this shows what the guard sees.
@@ -148,13 +157,11 @@ const downloadHits = () => requests.filter((u) => u.includes('/api/lm/download-m
   (active && active.downloads || []).forEach((d) =>
     console.log(`    id=${d.downloadId} modelId=${JSON.stringify(d.modelId)} versionId=${JSON.stringify(d.versionId)}`));
 
-  // Third case: the SAME version again — this one SHOULD be deduped.
-  const a2 = await send(chrome, 'DOWNLOAD_MODEL', { modelId: 200, versionId: 2000, modelName: 'Model B again' });
-  const hits2 = downloadHits();
-  console.log('\n[2] 同一个版本重复请求仍然要被去重（这是之前修过的）');
-  check('同一版本被识别为已在下载中',
-    a2 && a2.success === true && a2.reused === true, JSON.stringify(a2));
-  check('没有产生第三个下载请求', hits2.length === 2, `收到 ${hits2.length} 个`);
+  console.log('\n[2] 排队中的版本再点一次，不会排成两条');
+  const b2 = await send(chrome, 'DOWNLOAD_MODEL', { modelId: 200, versionId: 2000, modelName: 'B again' });
+  check('返回原来的位置而不是新增一条',
+    b2 && b2.queued === true && b2.position === 1, JSON.stringify(b2));
+  check('仍然只有一个下载请求', downloadHits().length === 1, `${downloadHits().length} 个`);
 
   console.log('\n  全部请求顺序（最终）：');
   requests.forEach((h, i) => console.log(`    ${i}. ` + h.replace(/^https?:\/\/[^/]+/, '').slice(0, 95)));

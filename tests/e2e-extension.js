@@ -37,7 +37,16 @@ function stageExtension() {
 
 /** Fake LoRA Manager: empty libraries, and downloads that never finish. */
 function startLoRA() {
-  const state = { downloads: [], progress: new Map() };
+  const state = { downloads: [], progress: new Map(), held: new Map() };
+  // Let the test finish a transfer on demand, the way a real one ends.
+  state.finish = (id) => {
+    const h = state.held.get(id);
+    if (!h) return false;
+    state.held.delete(id);
+    h.writeHead(200, { 'Content-Type': 'application/json' });
+    h.end(JSON.stringify({ success: true, file_name: 'finished.safetensors' }));
+    return true;
+  };
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://127.0.0.1');
     const p = u.pathname;
@@ -46,7 +55,8 @@ function startLoRA() {
     if (p === '/api/lm/download-model-get') {
       const id = u.searchParams.get('download_id');
       state.downloads.push({ id, modelId: u.searchParams.get('model_id'), versionId: u.searchParams.get('model_version_id') });
-      // The transfer stays open for the whole download — never answered.
+      // The transfer stays open for the whole download — until the test ends it.
+      state.held.set(id, res);
       return;
     }
     if (p.startsWith('/api/lm/download-progress/')) {
@@ -159,7 +169,13 @@ const clickDownload = (page) => page.evaluate(() => {
   lm.state.downloads.forEach((d) => log(` -> modelId=${d.modelId} versionId=${d.versionId}`));
 
   check('A 的下载已发出', n1 >= 1, `${n1} 个`);
-  check('B 的下载也发出（不被 A 挡住）', n2 === 2, `累计 ${n2} 个`);
+  // This used to assert that BOTH requests went out at once. They no longer do,
+  // and that is the point: on a link that dies for minutes at a time, every
+  // extra transfer in flight is another casualty when it does. What must hold
+  // is that B's click is not LOST — it is accepted and queued.
+  check('B 没有并发发出（一次只压一条）', n2 === 1, `累计 ${n2} 个`);
+  const bAreaNow = await tabB.evaluate(() => (document.querySelector('.lb-dl-area') || {}).textContent || '');
+  check('B 的点击被接受并显示排队中，不是被丢弃', /排队中/.test(bAreaNow), bAreaNow);
 
   console.log('\n[3] 点了就该有反馈');
   const bArea = await tabB.evaluate(() => {
@@ -172,8 +188,8 @@ const clickDownload = (page) => page.evaluate(() => {
   });
   log('B 的下载区:', bArea);
   log('B 的气泡:', bBubble);
-  check('B 的下载区变成了进度态（不再是按钮）', !/下载到库/.test(bArea), bArea);
-  check('B 的气泡可见并显示进度', bBubble !== '(气泡隐藏)', bBubble);
+  check('B 的下载区给出了状态（不再是按钮）', !/下载到库/.test(bArea), bArea);
+  check('B 的气泡可见并说明了状态', bBubble !== '(气泡隐藏)', bBubble);
 
   console.log('\n[4] 点击不该被每 2 秒的重渲染吞掉');
   // Click on the live button repeatedly across rebuild cycles; every click must
@@ -215,12 +231,14 @@ const clickDownload = (page) => page.evaluate(() => {
   check('下载按钮在整个采样期内是同一个节点',
     !stability.error && stability.replaced === 0, JSON.stringify(stability));
 
-  // And the plain click path still works.
-  const beforeC = lm.state.downloads.length;
+  // And the plain click path still works: with one transfer already running
+  // (or queued) the click lands in the queue rather than on the wire, so what
+  // is asserted is that it is *taken*, not that a request goes out.
   await tabC.evaluate(() => document.querySelector('.lb-dl-btn').click());
   await sleep(1500);
-  const afterC = lm.state.downloads.length;
-  check('点击仍然能开始下载', afterC === beforeC + 1, `${beforeC} → ${afterC}`);
+  const cArea = await tabC.evaluate(() => (document.querySelector('.lb-dl-area') || {}).textContent || '');
+  check('点击仍然有效（开始或排队，不会被丢掉）',
+    /排队中|%|准备中/.test(cArea), cArea);
 
   console.log('\n[6] 点了立刻要有反馈，不等轮询');
   const tabD = await browser.newPage();
@@ -238,6 +256,64 @@ const clickDownload = (page) => page.evaluate(() => {
   log('D 点击后 60ms 的控件文字:', feedback.trim());
   check('点击后立刻显示等待态（不是继续显示按钮）',
     !/下载到库/.test(feedback), feedback);
+
+  // Sections [2]-[6] left transfers running and queued behind them. Start [7]
+  // from an idle queue, or "the first click goes immediately" is untestable.
+  const drain = async (max = 40) => {
+    for (let i = 0; i < max; i++) {
+      const ids = [...lm.state.held.keys()];
+      ids.forEach((id) => lm.state.finish(id));
+      const before = lm.state.downloads.length;
+      await sleep(800);
+      if (lm.state.held.size === 0 && lm.state.downloads.length === before) return true;
+    }
+    return false;
+  };
+  const idle = await drain();
+  console.log(`\n  （清空此前遗留的下载：${idle ? '队列已空' : '仍有残留'}，累计 ${lm.state.downloads.length} 个请求）`);
+
+  console.log('\n[7] 点击先记录：一次只发一个请求，后面的排队');
+  const tabE = await browser.newPage();
+  const tabF = await browser.newPage();
+  await tabE.goto(`http://civitai.com:${SITE_PORT}/models/500?modelVersionId=500000`, { waitUntil: 'domcontentloaded' });
+  await tabF.goto(`http://civitai.com:${SITE_PORT}/models/600?modelVersionId=600000`, { waitUntil: 'domcontentloaded' });
+  await sleep(2500);
+
+  const eStart = lm.state.downloads.length;
+  await tabE.evaluate(() => document.querySelector('.lb-dl-btn').click());
+  await sleep(1500);
+  const afterE = lm.state.downloads.length;
+
+  await tabF.evaluate(() => document.querySelector('.lb-dl-btn').click());
+  await sleep(2500);
+  const afterF = lm.state.downloads.length;
+
+  const fArea = await tabF.evaluate(() => (document.querySelector('.lb-dl-area') || {}).textContent || '');
+  const eBubble = await tabE.evaluate(() => {
+    const el = document.getElementById('lb-downloads');
+    return el && !el.hidden ? el.textContent.replace(/\s+/g, ' ').slice(0, 90) : '(隐藏)';
+  });
+  console.log(`  第一个下载后服务器收到 ${afterE - eStart} 个请求；第二个点击后共 ${afterF - eStart} 个`);
+  log('F 的控件:', fArea.trim());
+  log('E 的气泡:', eBubble);
+
+  check('第一个点击立即发出请求', afterE - eStart === 1, `${afterE - eStart}`);
+  check('第二个点击没有并发发出（排队中）', afterF - eStart === 1, `共 ${afterF - eStart} 个 —— 说明两个请求同时发出去了`);
+  check('第二个页面显示「排队中」而不是「下载到库」', /排队中/.test(fArea), fArea);
+  check('气泡里能同时看到进行中和排队', /正在下载/.test(eBubble) && /排队/.test(eBubble), eBubble);
+
+  console.log('\n[8] 前一个结束后，排队的自动开始');
+  lm.state.finish(lm.state.downloads[afterE - 1].id);
+  await sleep(4000);
+  const last = lm.state.downloads[lm.state.downloads.length - 1];
+  console.log(`  服务器累计收到 ${lm.state.downloads.length - eStart} 个请求，最后一个是 model_id=${last.modelId}`);
+  check('排队的下载被自动发出', lm.state.downloads.length - eStart === 2,
+    `共 ${lm.state.downloads.length - eStart} 个`);
+  check('发出的是排队的那个（600）', last.modelId === '600', `实际 model_id=${last.modelId}`);
+
+  const fAfter = await tabF.evaluate(() => (document.querySelector('.lb-dl-area') || {}).textContent || '');
+  log('F 的控件（应已变成进度）:', fAfter.trim());
+  check('排队中的控件变成了正在下载', !/排队中/.test(fAfter), fAfter);
 
   await browser.close();
   lm.srv.close();

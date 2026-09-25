@@ -260,6 +260,17 @@ const INFLIGHT_KEY = 'inflightDownloads';   // downloadId → { modelId, version
 const PENDING_KEY = 'pendingNotices';       // downloadId → { ok, fileName, error, at }
 const HISTORY_KEY = 'downloadHistory';      // newest-first list of past outcomes
 const UNCONFIRMED_KEY = 'unconfirmedOutcomes';  // downloadId → { modelId, versionId, at }
+const QUEUE_KEY = 'downloadQueue';          // ordered list of { modelId, versionId, modelName, at }
+
+// How many transfers may run at once.
+//
+// One, deliberately. The link these downloads traverse dies for minutes at a
+// time, and every transfer in flight when it dies dies with it and then races
+// the others to reconnect — measured: seven clicks at once, four outright
+// failures, while a single file ran at 4.6 MB/s. Concurrency does not add
+// bandwidth here; it only multiplies the casualties. Clicks are not lost —
+// they queue.
+const QUEUE_MAX_CONCURRENT = 1;
 
 // Outcomes are kept after they have been reported, so the popup can show a log
 // that survives being closed and reopened. "Claimed once" is the right rule for
@@ -269,6 +280,16 @@ const HISTORY_MAX = 20;
 const inFlight = new Map();
 const unnotified = new Map();   // ok: true = succeeded, false = failed, null = unknown
 let history = [];               // newest first
+
+// Downloads the user has asked for that have not been put on the wire yet, in
+// the order they were clicked. Persisted with everything else, so a worker
+// terminated between two transfers still knows what it owes.
+let queue = [];
+// Set synchronously while a transfer is being started, before it is registered
+// in `inFlight` — otherwise a click and the queue pump can both see an idle
+// wire in the same tick and start two transfers.
+let pumping = false;
+const busy = () => pumping || inFlight.size >= QUEUE_MAX_CONCURRENT;
 
 // Outcomes that came back "unknown" and may yet be settled by a later index.
 // Kept apart from `unnotified` because claiming clears that map — and an entry
@@ -286,11 +307,12 @@ async function hydrate() {
   hydrated = true;
   try {
     const stored = await chrome.storage.session.get(
-      [INFLIGHT_KEY, PENDING_KEY, HISTORY_KEY, UNCONFIRMED_KEY]);
+      [INFLIGHT_KEY, PENDING_KEY, HISTORY_KEY, UNCONFIRMED_KEY, QUEUE_KEY]);
     for (const [id, v] of Object.entries(stored[INFLIGHT_KEY] || {})) inFlight.set(id, v);
     for (const [id, v] of Object.entries(stored[PENDING_KEY] || {})) unnotified.set(id, v);
     for (const [id, v] of Object.entries(stored[UNCONFIRMED_KEY] || {})) unconfirmed.set(id, v);
     if (Array.isArray(stored[HISTORY_KEY])) history = stored[HISTORY_KEY];
+    if (Array.isArray(stored[QUEUE_KEY])) queue = stored[QUEUE_KEY];
   } catch (e) {
     console.debug('[LoraBridge] could not restore download state:', e.message);
   }
@@ -304,6 +326,7 @@ function persistState() {
       [PENDING_KEY]: Object.fromEntries(unnotified),
       [HISTORY_KEY]: history,
       [UNCONFIRMED_KEY]: Object.fromEntries(unconfirmed),
+      [QUEUE_KEY]: queue,
     });
   } catch (e) { /* storage unavailable */ }
 }
@@ -445,6 +468,10 @@ async function reconcileDownloads() {
       at: Date.now(),
     });
     console.debug('[LoraBridge] reconciled orphaned download:', downloadId, 'ok=' + ok);
+    // A transfer settled here counts as the wire freeing up just as much as one
+    // that settled through its own finally — which never ran, this worker being
+    // a different one.
+    pumpQueue();
   }
 }
 
@@ -540,6 +567,66 @@ async function handleDownloadModel({ modelId, versionId, modelName }) {
     await reconcileDownloads();   // settle the stale one before starting anew
   }
 
+  // Already waiting in the queue for this same version? Queueing it a second
+  // time would download the same file twice once its turn came round.
+  const waiting = queue.findIndex((q) => versionKey(q.modelId, q.versionId) === key);
+  if (waiting !== -1) {
+    return { success: true, queued: true, position: waiting + 1 };
+  }
+
+  // Only one transfer at a time (see the note on QUEUE_MAX_CONCURRENT). The
+  // click is still honoured — it is recorded and started when the wire is free.
+  if (busy()) {
+    queue.push({ modelId: modelId ?? null, versionId: versionId ?? null, modelName: modelName || null, at: Date.now() });
+    persistState();
+    return { success: true, queued: true, position: queue.length };
+  }
+
+  return startDownloadNow({ modelId, versionId, modelName });
+}
+
+/**
+ * Put one download on the wire, right now.
+ *
+ * Split out from handleDownloadModel so the queue can dispatch through exactly
+ * the same path a direct click takes — one place builds the URL, records the
+ * transfer and attaches the outcome handler.
+ */
+async function startDownloadNow({ modelId, versionId, modelName }) {
+  // Set synchronously, before the first await: it is what stops the queue pump
+  // and a click from both deciding the wire is free in the same tick.
+  pumping = true;
+  try {
+    return await beginDownload({ modelId, versionId, modelName });
+  } finally {
+    pumping = false;
+  }
+}
+
+/**
+ * Start the next queued download, if the wire is free.
+ *
+ * Called from every point where a transfer ends (its own finally, reconciliation
+ * settling an orphan, the heartbeat, and each page poll) so the queue keeps
+ * moving whether or not the tab that created it is still open.
+ */
+async function pumpQueue() {
+  try {
+    await hydrate();
+    // No await between this check and startDownloadNow taking the flag: two
+    // pumps racing here would both see an idle wire and start two transfers,
+    // which is the whole thing the queue exists to prevent.
+    if (busy() || queue.length === 0) return;
+    const next = queue.shift();
+    persistState();
+    console.debug('[LoraBridge] queue: starting', queue.length, 'still waiting');
+    await startDownloadNow(next);
+  } catch (e) {
+    console.debug('[LoraBridge] queue pump failed:', e.message);
+  }
+}
+
+async function beginDownload({ modelId, versionId, modelName }) {
   let baseUrl;
   try {
     baseUrl = await getBaseUrl();
@@ -639,6 +726,8 @@ async function handleDownloadModel({ modelId, versionId, modelName }) {
         at: Date.now(),
       });
       markSettled();
+      // The wire is free — hand it to whoever is next in line.
+      pumpQueue();
     });
 
   console.debug('[LoraBridge] download started:', downloadId);
@@ -735,11 +824,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'CANCEL_QUEUED') {
+    // Dropping a download that has not started yet. Separate from
+    // CANCEL_DOWNLOAD because a queued item has no server-side download id —
+    // nothing has been sent, which is the whole point of the queue.
+    respond((async () => {
+      await hydrate();
+      const { modelId, versionId } = message.payload || {};
+      const key = versionKey(modelId, versionId);
+      const before = queue.length;
+      queue = queue.filter((q) => versionKey(q.modelId, q.versionId) !== key);
+      if (queue.length !== before) persistState();
+      return { success: queue.length !== before };
+    })(), sendResponse);
+    return true;
+  }
+
   if (message.type === 'ACTIVE_DOWNLOADS') {
     // Everything a page needs to show live download state: what is running,
     // how far along, and whether it has stopped making progress.
     respond((async () => {
       await hydrate();
+
+      // The poll is the most reliable driver the queue has: it runs every
+      // couple of seconds in every open tab, and it is the one thing still
+      // going after a worker has been terminated and restarted mid-transfer.
+      // Fire-and-forget so it never delays the response.
+      pumpQueue();
 
       // Fetched concurrently. In sequence, N transfers cost N round trips
       // end-to-end inside one 2-second poll — the last one's progress was
@@ -786,7 +897,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         };
       }))).filter(Boolean);
 
-      return { success: true, downloads: out };
+      return {
+        success: true,
+        downloads: out,
+        // Waiting downloads, so a page can say "排队中 · 第 2 位" instead of
+        // leaving the click looking like it did nothing.
+        queue: queue.map((q, i) => ({
+          position: i + 1,
+          modelId: q.modelId ?? null,
+          versionId: q.versionId ?? null,
+          modelName: q.modelName || null,
+          at: q.at || null,
+        })),
+      };
     })(), sendResponse);
     return true;
   }
@@ -1134,7 +1257,7 @@ async function handleGetLibrarySummary() {
 // Restore them, then settle anything that finished while nothing was running —
 // otherwise a download started from a tab that has since been closed would
 // never be reported.
-hydrate().then(reconcileDownloads);
+hydrate().then(reconcileDownloads).then(pumpQueue).catch(() => {});
 
 // Recovery also needs the worker to actually wake up. With the tab closed there
 // may be nothing left to generate an event, so the badge would only appear once
@@ -1144,7 +1267,10 @@ hydrate().then(reconcileDownloads);
 try {
   chrome.alarms.create('reconcile-downloads', { periodInMinutes: 1 });
   chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === 'reconcile-downloads') reconcileDownloads();
+    if (alarm.name !== 'reconcile-downloads') return;
+    // Also the queue's backstop: with every tab closed nothing polls, and a
+    // queue with nobody to advance it would sit there indefinitely.
+    reconcileDownloads().then(pumpQueue).catch(() => {});
   });
 } catch (e) {
   console.debug('[LoraBridge] alarms unavailable:', e.message);

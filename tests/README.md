@@ -17,11 +17,14 @@ LB_CS=/tmp/old.js node tests/poll-cadence.js      # 应当失败
 
 | 文件 | 测什么 | 反向验证用的变量 |
 |---|---|---|
-| `e2e-extension.js` | **真实扩展 + 真实 Chromium + 假服务器**，两个真实标签页：并发下载、控件稳定性、点击后的即时反馈 | `LB_EXT`（扩展目录） |
-| `worker-concurrency.js` | 直接加载真实的 `background.js`（配假的 `chrome` 与 `fetch`）：两个标签页并发下载、同版本去重 | `LB_BG` |
+| `e2e-extension.js` | **真实扩展 + 真实 Chromium + 假服务器**，多个真实标签页：队列行为、控件稳定性、点击的即时反馈 | `LB_EXT`（扩展目录） |
+| `worker-concurrency.js` | 直接加载真实的 `background.js`（配假的 `chrome` 与 `fetch`）：一次只压一条、同版本去重 | `LB_BG` |
+| `download-queue.js` | 队列机制：排队位置、去重、先进先出、取消排队、worker 重启后队列还在 | `LB_BG` |
+| `download-signals.js` | 已用时只增不减；字节数倒退时说明「已重新传输」 | `LB_CS` |
 | `list-outage.js` | ComfyUI 未启动时列表页完全静止，以及启动后自动恢复 | `LB_CS` |
 | `bubble-scans.js` | 气泡自身的 DOM 重建不得触发列表扫描 | `LB_CS` |
 | `poll-cadence.js` | 空闲／隐藏标签页的轮询次数 | `LB_CS` |
+| `download-signals.js` | （见上）已用时与「重新传输」提示 | `LB_CS` |
 | `click-dispatch-probe.js` | 不是断言套件，是一个探针：光标下的节点在按下与抬起之间被移除时，浏览器到底把 `click` 派发到哪里（答案：**不派发**） | — |
 
 ## 两件必须注意的事
