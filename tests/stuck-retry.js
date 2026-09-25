@@ -42,6 +42,7 @@ const res = (body, status = 200) => ({
 (async () => {
   const requests = [];
   const cancels = [];
+  const skips = [];
   const held = new Map();
   // Bytes reported by the fake server, per download id. Set to -1 for "no
   // progress record at all", which is the other way a transfer looks dead.
@@ -55,9 +56,13 @@ const res = (body, status = 200) => ({
       const id = u.searchParams.get('download_id');
       return new Promise((resolve) => held.set(id, resolve));
     }
-    if (p === '/api/lm/cancel-download-get') {
+    // The server has TWO ways to stop a transfer and they differ on the one
+    // thing that matters: cancel deletes the .part, skip keeps it so the next
+    // request resumes. The retry must use skip, or it throws away the bytes it
+    // was about to resume from. Recording which one arrived is the point.
+    if (p === '/api/lm/cancel-download-get' || p === '/api/lm/skip-download') {
       const id = u.searchParams.get('download_id');
-      cancels.push(id);
+      (p === '/api/lm/skip-download' ? skips : cancels).push(id);
       held.get(id) && held.get(id)(res({ success: true }));
       held.delete(id);
       return res({ success: true });
@@ -104,23 +109,26 @@ const res = (body, status = 200) => ({
   console.log(`  首次请求已发出（共 ${beforeRetry} 个），现在让字节数卡住不动`);
   await tick(4);                                  // exceeds the 1.5s window
 
-  console.log(`  取消请求: ${cancels.length} 次；下载请求: ${beforeRetry} → ${downloadsSent()} 个`);
-  check('停住后发出了取消请求', cancels.length >= 1, `${cancels.length} 次`);
+  console.log(`  停止请求：skip ${skips.length} 次 / cancel ${cancels.length} 次；下载请求 ${beforeRetry} → ${downloadsSent()} 个`);
+  check('停住后发出了停止请求', skips.length + cancels.length >= 1, `${skips.length + cancels.length} 次`);
+  check('**用的是 skip 而不是 cancel**（cancel 会删掉 .part，重试就白下了）',
+    skips.length >= 1 && cancels.length === 0, `skip ${skips.length} / cancel ${cancels.length}`);
   check('并且重新发起了下载（自动重试）', downloadsSent() > beforeRetry, `${beforeRetry} → ${downloadsSent()}`);
 
   console.log('\n[2] 一直在慢慢爬（有字节但没「实质」进展）也要重试');
-  const cancelsBefore = cancels.length;
+  const stops = () => skips.length + cancels.length;
+  const cancelsBefore = stops();
   const id2 = [...held.keys()][0];
   // +100 bytes per tick: moving, but nowhere near minProgressBytes (1024).
   let b = 6000000;
   for (let i = 0; i < 5; i++) { b += 100; progressFor.set(id2, b); await send('ACTIVE_DOWNLOADS', {}); await sleep(600); }
-  console.log(`  字节数从 6000100 爬到 ${b}（每次 +100），取消次数 ${cancelsBefore} → ${cancels.length}`);
-  check('缓慢爬行也被判定为停滞', cancels.length > cancelsBefore, `${cancelsBefore} → ${cancels.length}`);
+  console.log(`  字节数从 6000100 爬到 ${b}（每次 +100），停止次数 ${cancelsBefore} → ${stops()}`);
+  check('缓慢爬行也被判定为停滞', stops() > cancelsBefore, `${cancelsBefore} → ${stops()}`);
 
   console.log('\n[3] 重试次数用尽后要放弃并说明原因，不能永远重试');
-  const limit = cancels.length + 6;
+  const limit = stops() + 6;
   let guard = 0;
-  while (cancels.length < limit && guard++ < 60) {
+  while (stops() < limit && guard++ < 60) {
     const cur = [...held.keys()][0];
     if (cur) progressFor.set(cur, -1);            // no progress record at all
     await send('ACTIVE_DOWNLOADS', {});
@@ -128,7 +136,7 @@ const res = (body, status = 200) => ({
   }
   const hist = await send('DOWNLOAD_HISTORY', {});
   const givenUp = (hist.history || []).filter((h) => /自动重试/.test(h.error || ''));
-  console.log(`  共取消 ${cancels.length} 次，放弃记录 ${givenUp.length} 条`);
+  console.log(`  共停止 ${stops()} 次（skip ${skips.length} / cancel ${cancels.length}），放弃记录 ${givenUp.length} 条`);
   if (givenUp.length) log_('  放弃原因: ' + givenUp[0].error);
   check('最终放弃了（没有无限重试）', givenUp.length >= 1, `${givenUp.length} 条`);
   check('放弃时给出了可读的原因', givenUp.length > 0 && /自动重试/.test(givenUp[0].error || ''), JSON.stringify(givenUp[0] || {}));

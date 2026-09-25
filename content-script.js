@@ -514,7 +514,7 @@
       }
       const downloadId = wrap.dataset.lbDownload || (activeFor(wrap.dataset.lbModel, wrap.dataset.lbVersion) || {}).downloadId;
       send('CANCEL_DOWNLOAD', { downloadId }).then((res) => {
-        toast(res && res.success ? '已取消下载（已下载的部分保留）' : '❌ 取消失败');
+        toast(res && res.success ? '已停止下载（已下载的部分保留，重新点会接着下）' : '❌ 取消失败');
         delete wrap.dataset.lbPending;
         pollDownloads();
       });
@@ -1052,7 +1052,7 @@
           const downloadId = item && item.dataset.lbDl;
           cancel.disabled = true;
           send('CANCEL_DOWNLOAD', { downloadId }).then((res) => {
-            toast(res && res.success ? '已取消这个下载，队列继续' : '❌ 取消失败');
+            toast(res && res.success ? '已停止这个下载（保留已下载部分），队列继续' : '❌ 取消失败');
             pollDownloads();
           });
           return;

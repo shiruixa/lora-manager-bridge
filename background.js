@@ -915,12 +915,27 @@ async function beginDownload({ modelId, versionId, modelName }) {
 }
 
 /**
- * Cancel an in-flight download. The server keeps partial files.
+ * Stop an in-flight download, keeping whatever has already been downloaded.
+ *
+ * Uses the server's **skip**, not its cancel, and the difference is not
+ * cosmetic — they are opposite on the one thing that matters here:
+ *
+ *   cancel  "Clean up ALL files including .part when user cancels"
+ *   skip    "keeps partial files (.part / .aria2) on disk so that a subsequent
+ *            download-model-get request for the same save path can auto-resume"
+ *
+ * This was calling cancel, so the stuck-download retry was deleting the bytes
+ * it was about to resume from and starting again from zero — the exact opposite
+ * of what it was added for, and of what the UI told the user. Measured on a
+ * real stall: the `.part` file vanished at the moment of the cancel.
+ *
+ * Skip is also the honest choice for the ✕ in the bubble, whose message
+ * promises the partial file is kept.
  */
 async function handleCancelDownload({ downloadId }) {
   if (!downloadId) return { success: false, error: '缺少 downloadId' };
   try {
-    const result = await queryEndpoint('/api/lm/cancel-download-get', { download_id: downloadId });
+    const result = await queryEndpoint('/api/lm/skip-download', { download_id: downloadId });
     if (result?.success === false) {
       return { success: false, error: result.error || '取消失败' };
     }
