@@ -389,6 +389,23 @@
   flex-shrink: 0;
 }
 
+/* Cancel one running transfer. In a batch, one wedged download holds up
+   everything behind it, and the ✕ for dismissing results only appears once
+   nothing is running — so it needs its own control, always available. */
+.lb-bubble-cancel {
+  flex-shrink: 0;
+  padding: 0 3px;
+  border: none;
+  background: transparent;
+  color: #718096;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.lb-bubble-cancel:hover { color: #e74c3c; opacity: 1; }
+.lb-bubble-cancel:disabled { opacity: 0.3; cursor: default; }
+
 .lb-bubble-pct.is-pending {
   color: #a0aec0;
   font-weight: 400;

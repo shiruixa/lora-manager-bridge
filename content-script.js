@@ -1024,6 +1024,22 @@
       // button every couple of seconds — the same way the download button lost
       // its clicks.
       el.addEventListener('click', (e) => {
+        const cancel = e.target.closest && e.target.closest('.lb-bubble-cancel');
+        if (cancel) {
+          // Cancel one transfer so the queue behind it can move. No confirmation:
+          // the download keeps its partial file on disk, and re-clicking the
+          // model just re-queues it.
+          e.preventDefault();
+          e.stopPropagation();
+          const item = cancel.closest('[data-lb-dl]');
+          const downloadId = item && item.dataset.lbDl;
+          cancel.disabled = true;
+          send('CANCEL_DOWNLOAD', { downloadId }).then((res) => {
+            toast(res && res.success ? '已取消这个下载，队列继续' : '❌ 取消失败');
+            pollDownloads();
+          });
+          return;
+        }
         const close = e.target.closest && e.target.closest('.lb-bubble-close');
         if (!close) return;
         e.preventDefault();
@@ -1099,6 +1115,11 @@
       return '<div class="lb-bubble-item" data-lb-dl="' + escAttr(d.downloadId) + '">' +
         '<div class="lb-bubble-row"><span class="lb-bubble-name">' +
           esc(d.label || ('模型 ' + (d.modelId ?? '?'))) + '</span>' +
+        // A batch can wedge on one transfer — the server stops sending and, in
+        // the phase before any bytes flow, its stall timer does not cover it.
+        // Without this the whole queue waits behind it and the only way out is
+        // to go find that model's page.
+        '<button type="button" class="lb-bubble-cancel" title="取消这个下载">✕</button>' +
         '<span class="lb-bubble-pct' + (hasNumbers ? '' : ' is-pending') + '">' +
           (hasNumbers ? p + '%' : '准备中…') + '</span></div>' +
         '<div class="lb-bubble-bar"><i style="width:' + p + '%"></i></div>' +
