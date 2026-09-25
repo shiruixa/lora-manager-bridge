@@ -66,7 +66,17 @@ function startLoRA() {
       return json({ success: true, progress: 20, status: 'downloading', bytes_downloaded: 1000, total_bytes: 5000, bytes_per_second: 1000 });
     }
     if (p === '/api/lm/settings') return json({});
-    if (p.endsWith('/list')) return json({ items: [], total: 0 });   // nothing is in the library
+    if (p.endsWith('/list')) {
+      // Model 700 is in the library — used by the no-version-in-URL case, where
+      // the badge must not claim "this version is not downloaded".
+      if (u.searchParams.get('civitai_model_id') === '700' && p.includes('/loras/')) {
+        return json({
+          items: [{ civitai: { id: 7777, modelId: 700 }, file_name: 'blank03-000010', sub_type: 'lora', base_model: 'Anima' }],
+          total: 1,
+        });
+      }
+      return json({ items: [], total: 0 });
+    }
     return json({ success: true });
   });
   return new Promise((r) => srv.listen(LM_PORT, '127.0.0.1', () => r({ srv, state })));
@@ -322,6 +332,16 @@ const clickDownload = (page) => page.evaluate(() => {
   // and String(null) used to become the literal text "null" on the wire.
   await tabG.goto(`http://civitai.com:${SITE_PORT}/models/700`, { waitUntil: 'domcontentloaded' });
   await sleep(2500);
+
+  const gBadge = await tabG.evaluate(() => {
+    const b = document.querySelector('.lb-inline-badge');
+    return b ? b.textContent : '(无徽章)';
+  });
+  console.log(`  徽章: "${gBadge}"`);
+  check('徽章不能谎称「此版本未下载」',
+    !/此版本未下载/.test(gBadge), gBadge);
+  check('徽章如实说库里有什么',
+    /库中有这个模型/.test(gBadge), gBadge);
 
   const gHasBtn = await tabG.evaluate(() => !!document.querySelector('.lb-dl-btn'));
   await tabG.evaluate(() => document.querySelector('.lb-dl-btn') && document.querySelector('.lb-dl-btn').click());

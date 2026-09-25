@@ -299,6 +299,15 @@
       badgeEl.className = 'lb-inline-badge lb-inline-owned';
       badgeEl.innerHTML = '✅ 此版本已下载 <span class="lb-badge-extra">' + esc(matched.fileName) + ' · ' + (matched.modelType || '') + '</span>';
       badgeEl.title = tooltip(versions);
+    } else if (hasAny && !versionId) {
+      // No version in the URL, so there is nothing to match against — and
+      // "this version is not downloaded" is then a claim we cannot support.
+      // On a single-version model it reads as nonsense: "库中有 1 个其他版本"
+      // when the model has exactly one version and it is right there in the
+      // library. Say what is actually known instead.
+      badgeEl.className = 'lb-inline-badge lb-inline-partial';
+      badgeEl.textContent = '📦 库中有这个模型 (' + versions.length + ' 个版本)';
+      badgeEl.title = tooltip(versions) + '\n(地址里没有版本号，无法判断当前是哪个版本)';
     } else if (hasAny) {
       badgeEl.className = 'lb-inline-badge lb-inline-partial';
       badgeEl.textContent = '⚠️ 此版本未下载 (库中有 ' + versions.length + ' 个其他版本)';
