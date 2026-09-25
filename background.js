@@ -356,10 +356,23 @@ const STARTUP_GRACE_MS = 90000;
 // no page open therefore outlives the worker that started it, taking the
 // in-flight request and its `.finally()` with it: no badge, no notice.
 //
-// So the bookkeeping is mirrored into `chrome.storage.session`, which outlives
-// the worker within a browser session, and the outcome is re-derived from the
-// server afterwards rather than remembered from a promise that no longer
-// exists. (No extra permission: session storage is part of `storage`.)
+// So the bookkeeping is mirrored into extension storage, and the outcome is
+// re-derived from the server afterwards rather than remembered from a promise
+// that no longer exists.
+//
+// TWO areas, because they have different lifetimes:
+//
+//   chrome.storage.session  notifications, the result log, unconfirmed results
+//   chrome.storage.local    in-flight transfers and the queue
+//
+// `session` is right for things the user reads once: it dies with the browser,
+// so yesterday's ✅ cannot come back on its own. But it does NOT survive
+// reloading the extension — and the queue and the in-flight set are *work in
+// progress*, which must. Reloading during a batch (which is exactly what
+// installing a fix requires) silently dropped every queued download and lost
+// track of a transfer that was still running on the server. Work in progress
+// goes in `local`, with an age cutoff so nothing from a previous day comes back
+// to life. (No extra permission: both areas are part of `storage`.)
 // ---------------------------------------------------------------------------
 
 const INFLIGHT_KEY = 'inflightDownloads';   // downloadId → { modelId, versionId, at }
@@ -367,6 +380,11 @@ const PENDING_KEY = 'pendingNotices';       // downloadId → { ok, fileName, er
 const HISTORY_KEY = 'downloadHistory';      // newest-first list of past outcomes
 const UNCONFIRMED_KEY = 'unconfirmedOutcomes';  // downloadId → { modelId, versionId, at }
 const QUEUE_KEY = 'downloadQueue';          // ordered list of { modelId, versionId, modelName, at }
+
+// Work in progress older than this is not resumed — a queue or a transfer from
+// a previous day is stale, and reviving it would just produce noise (a result
+// for a download nobody remembers starting).
+const RESUME_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 // How many transfers may run at once.
 //
@@ -413,12 +431,28 @@ async function hydrate() {
   hydrated = true;
   try {
     const stored = await chrome.storage.session.get(
-      [INFLIGHT_KEY, PENDING_KEY, HISTORY_KEY, UNCONFIRMED_KEY, QUEUE_KEY]);
-    for (const [id, v] of Object.entries(stored[INFLIGHT_KEY] || {})) inFlight.set(id, v);
+      [PENDING_KEY, HISTORY_KEY, UNCONFIRMED_KEY]);
     for (const [id, v] of Object.entries(stored[PENDING_KEY] || {})) unnotified.set(id, v);
     for (const [id, v] of Object.entries(stored[UNCONFIRMED_KEY] || {})) unconfirmed.set(id, v);
     if (Array.isArray(stored[HISTORY_KEY])) history = stored[HISTORY_KEY];
-    if (Array.isArray(stored[QUEUE_KEY])) queue = stored[QUEUE_KEY];
+
+    // Work in progress comes from `local`, so it survives reloading the
+    // extension. Anything too old to still be real is dropped rather than
+    // resumed.
+    const durable = await chrome.storage.local.get([INFLIGHT_KEY, QUEUE_KEY]);
+    const fresh = (at) => Date.now() - (at || 0) < RESUME_MAX_AGE_MS;
+    let droppedInflight = 0, droppedQueued = 0;
+    for (const [id, v] of Object.entries(durable[INFLIGHT_KEY] || {})) {
+      if (fresh(v.at)) inFlight.set(id, v); else droppedInflight++;
+    }
+    if (Array.isArray(durable[QUEUE_KEY])) {
+      queue = durable[QUEUE_KEY].filter((q) => fresh(q.at));
+      droppedQueued = durable[QUEUE_KEY].length - queue.length;
+    }
+    if (droppedInflight || droppedQueued) {
+      console.debug('[LoraBridge] dropped stale work in progress:', droppedInflight, 'transfers,', droppedQueued, 'queued');
+      persistState();
+    }
   } catch (e) {
     console.debug('[LoraBridge] could not restore download state:', e.message);
   }
@@ -427,11 +461,15 @@ async function hydrate() {
 
 function persistState() {
   try {
+    // Read once, gone on reload — appropriate for notices and the result log.
     chrome.storage.session.set({
-      [INFLIGHT_KEY]: Object.fromEntries(inFlight),
       [PENDING_KEY]: Object.fromEntries(unnotified),
       [HISTORY_KEY]: history,
       [UNCONFIRMED_KEY]: Object.fromEntries(unconfirmed),
+    });
+    // Work in progress: must outlive a reload of the extension.
+    chrome.storage.local.set({
+      [INFLIGHT_KEY]: Object.fromEntries(inFlight),
       [QUEUE_KEY]: queue,
     });
   } catch (e) { /* storage unavailable */ }

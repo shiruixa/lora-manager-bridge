@@ -30,7 +30,7 @@ function makeStorage(shared) {
   };
 }
 
-function makeChrome(session) {
+function makeChrome(stores) {
   const listeners = [];
   return {
     __listeners: listeners,
@@ -41,8 +41,8 @@ function makeChrome(session) {
     },
     storage: {
       sync: makeStorage(),
-      session,
-      local: makeStorage(),
+      session: stores.session,
+      local: stores.local,
       onChanged: { addListener: () => {} },
     },
     action: { setBadgeText: () => {}, setBadgeBackgroundColor: () => {} },
@@ -51,8 +51,8 @@ function makeChrome(session) {
   };
 }
 
-function loadWorker(session, requests, pending) {
-  const chrome = makeChrome(session);
+function loadWorker(stores, requests, pending) {
+  const chrome = makeChrome(stores);
   const res = (body, status = 200) => ({
     ok: status >= 200 && status < 300, status,
     text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
@@ -84,10 +84,10 @@ const sentFor = (requests) => requests.filter((u) => u.includes('download-model-
   .map((u) => new URL(u).searchParams.get('model_id') + '/' + new URL(u).searchParams.get('model_version_id'));
 
 (async () => {
-  const session = makeStorage();
+  const stores = { session: makeStorage(), local: makeStorage() };
   const requests = [];
   const pending = [];
-  const chrome = loadWorker(session, requests, pending);
+  const chrome = loadWorker(stores, requests, pending);
   await sleep(150);
 
   console.log('\n[1] 一次只发一个：后面的点击被记下来，不阻塞返回');
@@ -134,18 +134,32 @@ const sentFor = (requests) => requests.filter((u) => u.includes('download-model-
   await sleep(300);
   check('被取消的 C 永远不会被发出', sentFor(requests).length === 2, JSON.stringify(sentFor(requests)));
 
-  console.log('\n[5] worker 被终止后，队列还在（这是「先点着」的前提）');
-  const session2 = session;               // same storage = same worker, restarted
+  console.log('\n[5] 队列与在途下载要在【重载扩展】后仍然存在');
+  // A real reload does NOT keep the worker's session storage — that was the
+  // discovery: reloading mid-batch silently dropped the whole queue. Only the
+  // `local` area carries over, which is why the work in progress lives there.
+  // Put something of each kind in place first, or there is nothing to carry.
+  const d1 = await send(chrome, 'DOWNLOAD_MODEL', { modelId: 400, versionId: 4000, modelName: 'D' });
+  const d2 = await send(chrome, 'DOWNLOAD_MODEL', { modelId: 500, versionId: 5000, modelName: 'E' });
+  await sleep(120);
+  console.log(`  重载前: D→${JSON.stringify(d1)}  E→${JSON.stringify(d2)}`);
+  check('重载前是一个在传、一个排队',
+    d1 && d1.success === true && !d1.queued && d2 && d2.queued === true, JSON.stringify([d1, d2]));
+
+  const reloaded = { session: makeStorage(), local: stores.local };
   const requests2 = [];
   const pending2 = [];
-  const chrome2 = loadWorker(session2, requests2, pending2);
+  const chrome2 = loadWorker(reloaded, requests2, pending2);
   await sleep(150);
-  await send(chrome2, 'DOWNLOAD_MODEL', { modelId: 400, versionId: 4000, modelName: 'D' });
-  const e = await send(chrome2, 'DOWNLOAD_MODEL', { modelId: 500, versionId: 5000, modelName: 'E' });
-  await sleep(80);
-  console.log(`  重启后的 worker: D→运行, E→${JSON.stringify(e)}`);
-  check('重启后的 worker 仍然只发一个', sentFor(requests2).length === 1, JSON.stringify(sentFor(requests2)));
-  check('E 被排队', e && e.queued === true, JSON.stringify(e));
+
+  const carried = await send(chrome2, 'ACTIVE_DOWNLOADS', {});
+  const carriedQ = (carried.queue || []).map((q) => q.modelId);
+  const carriedD = (carried.downloads || []).map((d) => d.modelId);
+  console.log(`  重载后：在途 ${JSON.stringify(carriedD)}，排队 ${JSON.stringify(carriedQ)}`);
+  check('重载后在途的下载仍被跟踪（还在服务端跑着）', carriedD.includes(400), JSON.stringify(carried[0]));
+  check('重载后排队的下载还在队列里', carriedQ.includes(500), JSON.stringify(carriedQ));
+  check('重载没有重复发出已经在传的那个',
+    sentFor(requests2).length === 0, `重载后又发了 ${sentFor(requests2).length} 个请求`);
 
   console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'));
   process.exit(failures === 0 ? 0 : 1);
