@@ -169,6 +169,20 @@ body {
   white-space: normal;
 }
 
+/* Queued: recorded, not sent. Dimmed so a batch of twenty reads as "waiting",
+   not as twenty transfers in progress. */
+.notice--queued {
+  opacity: 0.62;
+}
+
+.notice--queued .notice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: inherit;
+  white-space: normal;
+}
+
 .notice-name {
   overflow: hidden;
   text-overflow: ellipsis;

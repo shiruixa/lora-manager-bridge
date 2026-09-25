@@ -168,5 +168,6 @@ const downloadHits = () => requests.filter((u) => u.includes('/api/lm/download-m
   const probesFinal = requests.filter((u) => u.includes('/api/lm/download-progress/'));
   console.log(`\n  去重守卫的进度查询（最终）：${probesFinal.length} 次`);
 
+  console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'));
   process.exit(failures === 0 ? 0 : 1);
 })();

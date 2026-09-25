@@ -141,7 +141,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     el.hidden = false;
 
     const running = rows.filter((e) => e.kind === 'active').length;
-    countEl.textContent = running ? `进行中 ${running}` : '';
+    const waiting = rows.filter((e) => e.kind === 'queued').length;
+    countEl.textContent = running
+      ? `进行中 ${running}` + (waiting ? ` · 排队 ${waiting}` : '')
+      : (waiting ? `排队 ${waiting}` : '');
 
     listEl.innerHTML = rows.map((e) => {
       const time = e.at ? fmtTime(e.at) : '';
@@ -161,6 +164,19 @@ document.addEventListener('DOMContentLoaded', async () => {
               (meta ? ' · ' + escapeHtml(meta) : '') + '</span>' +
           '</span>' +
           (time ? '<span class="notice-time">' + time + '</span>' : '') +
+          '</li>';
+      }
+      if (e.kind === 'queued') {
+        // Requested but not sent: the worker keeps one transfer on the wire and
+        // starts the next when it frees up. Shown apart from running rows
+        // because a queued item is not making progress and must not look like
+        // it is.
+        return '<li class="notice notice--queued">' +
+          '<span class="notice-icon">⏸</span>' +
+          '<span class="notice-text">' +
+            '<span class="notice-name">' + escapeHtml(e.label) + '</span>' +
+            '<span class="notice-meta">排队中 · 第 ' + e.position + ' 位</span>' +
+          '</span>' +
           '</li>';
       }
       const look = {
@@ -210,11 +226,31 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (existing) Object.assign(existing, row);
         else logEntries.unshift(row);
       }
+      // Queued downloads are listed too, keyed by version rather than by
+      // download id — nothing has been sent yet, so there is no id to use.
+      const waiting = (active && active.queue) || [];
+      const stillQueued = new Set();
+      for (const q of waiting) {
+        const key = q.modelId + ':' + q.versionId;
+        stillQueued.add(key);
+        const existing = logEntries.find((e) => e.kind === 'queued' && e.id === key);
+        const row = {
+          kind: 'queued',
+          id: key,
+          label: q.modelName || ('模型 ' + (q.modelId ?? '?')),
+          position: q.position,
+        };
+        if (existing) Object.assign(existing, row);
+        else logEntries.push(row);   // after the running rows, before history
+      }
+
       // Anything no longer running leaves the active rows. Its outcome is not
-      // lost: it is already in the history the worker keeps.
+      // lost: it is already in the history the worker keeps. The same goes for
+      // a queued item that has since started, been cancelled, or gone away.
       for (let i = logEntries.length - 1; i >= 0; i--) {
         const e = logEntries[i];
         if (e.kind === 'active' && !seen.has(e.id)) logEntries.splice(i, 1);
+        if (e.kind === 'queued' && !stillQueued.has(e.id)) logEntries.splice(i, 1);
       }
 
       renderLog();
