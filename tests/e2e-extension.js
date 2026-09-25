@@ -69,9 +69,11 @@ function startLoRA() {
     if (p.endsWith('/list')) {
       // Model 700 is in the library — used by the no-version-in-URL case, where
       // the badge must not claim "this version is not downloaded".
-      if (u.searchParams.get('civitai_model_id') === '700' && p.includes('/loras/')) {
+      const mid = u.searchParams.get('civitai_model_id');
+      if ((mid === '700' || mid === '800') && p.includes('/loras/')) {
+        const n = mid === '700' ? 7777 : 8888;
         return json({
-          items: [{ civitai: { id: 7777, modelId: 700 }, file_name: 'blank03-000010', sub_type: 'lora', base_model: 'Anima' }],
+          items: [{ civitai: { id: n, modelId: Number(mid) }, file_name: 'blank03-000010', sub_type: 'lora', base_model: 'Anima' }],
           total: 1,
         });
       }
@@ -87,6 +89,12 @@ function startSite() {
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://civitai.com');
     const id = (u.pathname.match(/\/models\/(\d+)/) || [])[1] || '0';
+    // Model 700's page carries the download href the real site has — that is
+    // where the current version id comes from when the URL does not say.
+    // Model 800's page has none, for the case where nothing can be inferred.
+    const dl = id === '700'
+      ? '<a class="mantine-Button-root" href="https://civitai.red/api/download/models/7777?fileId=3228554">Download</a>'
+      : '';
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Model ${id} | Civitai</title></head>
 <body>
@@ -95,6 +103,7 @@ function startSite() {
       <h1 class="mantine-Title-root">Model ${id}</h1>
     </div>
     <div class="ModelVersionList"><button>version one</button><button>version two</button></div>
+    ${dl}
   </div>
 </body></html>`);
   });
@@ -325,11 +334,11 @@ const clickDownload = (page) => page.evaluate(() => {
   log('F 的控件（应已变成进度）:', fAfter.trim());
   check('排队中的控件变成了正在下载', !/排队中/.test(fAfter), fAfter);
 
-  console.log('\n[9] 没有 ?modelVersionId= 的模型页，不能把 "null" 当成版本号');
+  console.log('\n[9] 地址里没有版本号时，要从页面的下载链接里认出来');
   await drain();
   const tabG = await browser.newPage();
-  // /models/{id} with no version in the query — ctx() gives versionId = null,
-  // and String(null) used to become the literal text "null" on the wire.
+  // /models/{id} with no ?modelVersionId= — the address bar alone cannot say
+  // which version this is, but the page links the current version's download.
   await tabG.goto(`http://civitai.com:${SITE_PORT}/models/700`, { waitUntil: 'domcontentloaded' });
   await sleep(2500);
 
@@ -337,22 +346,31 @@ const clickDownload = (page) => page.evaluate(() => {
     const b = document.querySelector('.lb-inline-badge');
     return b ? b.textContent : '(无徽章)';
   });
-  console.log(`  徽章: "${gBadge}"`);
-  check('徽章不能谎称「此版本未下载」',
-    !/此版本未下载/.test(gBadge), gBadge);
-  check('徽章如实说库里有什么',
-    /库中有这个模型/.test(gBadge), gBadge);
-
   const gHasBtn = await tabG.evaluate(() => !!document.querySelector('.lb-dl-btn'));
-  await tabG.evaluate(() => document.querySelector('.lb-dl-btn') && document.querySelector('.lb-dl-btn').click());
+  console.log(`  徽章: "${gBadge}"   下载按钮: ${gHasBtn}`);
+  check('认出了页面链接里的版本号 → 徽章说已下载',
+    /此版本已下载/.test(gBadge), gBadge);
+  check('已下载的版本不再显示下载按钮', !gHasBtn, '按钮仍在');
+
+  console.log('\n[10] 页面里也没有线索时，退回保守说法（不能谎称未下载）');
+  const tabH = await browser.newPage();
+  await tabH.goto(`http://civitai.com:${SITE_PORT}/models/800`, { waitUntil: 'domcontentloaded' });
+  await sleep(2500);
+  const hBadge = await tabH.evaluate(() => {
+    const b = document.querySelector('.lb-inline-badge');
+    return b ? b.textContent : '(无徽章)';
+  });
+  console.log(`  徽章: "${hBadge}"`);
+  check('不谎称「此版本未下载」', !/此版本未下载/.test(hBadge), hBadge);
+  check('如实说库里有什么', /库中有这个模型/.test(hBadge), hBadge);
+
+  await tabH.evaluate(() => document.querySelector('.lb-dl-btn') && document.querySelector('.lb-dl-btn').click());
   await sleep(2000);
-  const gLast = lm.state.downloads[lm.state.downloads.length - 1];
-  console.log(`  有下载按钮: ${gHasBtn}；服务器收到 model_id=${gLast && gLast.modelId} model_version_id=${gLast && gLast.versionId}`);
-  check('这一页确实有下载按钮（否则测不到）', gHasBtn, '没有按钮');
-  check('model_id 照常发出', gLast && gLast.modelId === '700', `实际 ${gLast && gLast.modelId}`);
+  const hLast = lm.state.downloads[lm.state.downloads.length - 1];
+  console.log(`  点了下载 → 服务器收到 model_id=${hLast && hLast.modelId} model_version_id=${hLast && hLast.versionId}`);
   check('没有把 "null" 当成 model_version_id 发出去',
-    gLast && gLast.versionId !== 'null' && gLast.versionId !== 'undefined',
-    `实际发的是 ${JSON.stringify(gLast && gLast.versionId)}`);
+    hLast && hLast.versionId !== 'null' && hLast.versionId !== 'undefined',
+    `实际发的是 ${JSON.stringify(hLast && hLast.versionId)}`);
 
   await browser.close();
   lm.srv.close();

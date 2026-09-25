@@ -228,6 +228,30 @@
     });
   }
 
+  /**
+   * The version this page is showing, when the URL does not say.
+   *
+   * CivitAI's canonical model URL carries `?modelVersionId=`, but not every way
+   * of arriving at a model page includes it — the address bar can be just
+   * `/models/{id}/{slug}`. Treating that as "no version" made the badge refuse
+   * to say anything, on pages where the model's only version was sitting in the
+   * library.
+   *
+   * The page does still link the current version's download, and that href
+   * carries the exact id (`/api/download/models/3341803?fileId=...`) — an exact
+   * value, found without guessing at any class name.
+   *
+   * Cannot produce a false "already downloaded": the id is only ever used to
+   * match against THIS model's library versions, so an id belonging to some
+   * other model simply fails to match and nothing is claimed.
+   */
+  function versionIdFromPage() {
+    const el = document.querySelector('[href*="/api/download/models/"]');
+    const href = (el && el.getAttribute('href')) || '';
+    const m = href.match(/\/api\/download\/models\/(\d+)/);
+    return m ? +m[1] : null;
+  }
+
   async function updateDetailBadge() {
     const myReqId = ++detailReqId;
 
@@ -248,6 +272,17 @@
         }
       }
     }
+    // No version in the URL: fall back to the one the page itself is offering.
+    // Not every route into a model page carries ?modelVersionId=, and without
+    // an id the check can only ever answer "cannot tell which version this is".
+    if (!versionId) {
+      const fromPage = versionIdFromPage();
+      if (fromPage) {
+        versionId = fromPage;
+        I('version from page href:', fromPage);
+      }
+    }
+
     if (!modelId && !versionId) return;
 
     // Show loading, clean old UI. Placed beside the title rather than in some
