@@ -1107,7 +1107,7 @@
       // A download that has not moved for a while is not dead — CivitAI stalls
       // and LoRA Manager retries with resume. Say so instead of looking frozen.
       const stalled = d.stalled
-        ? '<div class="lb-bubble-stall">⚠️ 网络卡顿，正在重试…</div>' : '';
+        ? '<div class="lb-bubble-stall">⚠️ 传输停滞，稍后会自动重试…</div>' : '';
       // The count went backwards, so the transfer is re-fetching from an
       // earlier offset. Without this the bar looks like it is running backwards.
       const restarted = d.restarted

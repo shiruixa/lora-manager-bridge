@@ -233,6 +233,112 @@ const versionKey = (modelId, versionId) => `${modelId ?? ''}:${versionId ?? ''}`
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// ---------------------------------------------------------------------------
+// Automatic retry for transfers that stop progressing
+//
+// Two ways a download stops being useful, and the server only recovers from
+// one of them:
+//
+//   - the connection dies mid-transfer → its stall timer notices and resumes
+//   - the connection goes quiet in a phase the stall timer does not cover
+//     (asking CivitAI for the download URL), or keeps trickling at a few KB/s
+//     → nothing on the server ever gives up, and the whole queue waits behind
+//     it forever
+//
+// Measured: one transfer sat at 9% moving ~8 KB/s (a 175 MB file, six hours to
+// go) with zero log lines, and another produced nothing at all for minutes.
+//
+// So the worker gives up on it and asks again. That is cheap because the server
+// resumes: `py/services/downloader.py:428-439` keeps the `.part` file and sends
+// a Range header for whatever is already in it, so a retry costs a reconnect —
+// not the bytes already downloaded.
+// ---------------------------------------------------------------------------
+
+// Test seam: the harness overrides these so the retry path runs in seconds
+// instead of minutes. Only a script inside the worker's own scope can set it —
+// page scripts have no access to it.
+const TUNING = {
+  stuckWindowMs: 3 * 60 * 1000,   // no real progress for this long → retry
+  minProgressBytes: 512 * 1024,   // "real progress" = at least this much (~3 KB/s)
+  maxRetries: 3,                  // then give up and let the queue move
+  ...(globalThis.__lbTuning || {}),
+};
+
+const lastProgress = new Map();  // downloadId → { bytes, at } of the last real advance
+const autoRetries = new Map();   // versionKey → attempts made
+
+/**
+ * Record a progress reading and say whether this transfer now looks dead.
+ *
+ * A reading of `null` (no progress record on the server) counts as no progress
+ * — it is exactly the wedge this exists to catch — but it must not refresh the
+ * timer either, or the check could never fire.
+ */
+function noteProgress(downloadId, bytes) {
+  const prev = lastProgress.get(downloadId);
+  const now = Date.now();
+  if (prev === undefined) {
+    lastProgress.set(downloadId, { bytes: bytes ?? 0, at: now });
+    return false;
+  }
+  // A byte count that went backwards is a restart, not progress, and must also
+  // reset the clock rather than count as movement.
+  if (bytes != null && (bytes - prev.bytes >= TUNING.minProgressBytes || bytes < prev.bytes)) {
+    lastProgress.set(downloadId, { bytes, at: now });
+    return false;
+  }
+  return now - prev.at > TUNING.stuckWindowMs;
+}
+
+async function retryStuckDownload(downloadId) {
+  const info = inFlight.get(downloadId);
+  if (!info) return;
+  const key = versionKey(info.modelId, info.versionId);
+  const tries = (autoRetries.get(key) || 0) + 1;
+
+  // Cancelling makes the transfer's own request finish in failure, and its
+  // outcome handler would then record a ❌ for a download that is about to be
+  // retried. Mark it so the log shows the retry, not a failure that never
+  // happened.
+  const entry = downloads.get(downloadId);
+  if (entry) entry.suppressOutcome = true;
+
+  // Stop the server's side of it. The partial file stays on disk, so whichever
+  // of these paths we take next picks up where this one left off.
+  await handleCancelDownload({ downloadId }).catch(() => {});
+  inFlight.delete(downloadId);
+  lastProgress.delete(downloadId);
+
+  if (tries > TUNING.maxRetries) {
+    // Out of attempts. Say so and let the queue go — one bad file must not hold
+    // up everything behind it.
+    autoRetries.delete(key);
+    recordOutcome(downloadId, {
+      ok: false,
+      error: '网络太慢或连接反复中断，已自动重试 ' + TUNING.maxRetries + ' 次仍未成功',
+      modelId: info.modelId ?? null,
+      versionId: info.versionId ?? null,
+      at: Date.now(),
+    });
+    console.debug('[LoraBridge] giving up on stuck download:', downloadId);
+    pumpQueue();
+    return;
+  }
+
+  autoRetries.set(key, tries);
+  console.debug('[LoraBridge] auto-retrying stuck download:', downloadId, 'attempt', tries);
+  // To the FRONT: it was already waiting its turn in the queue, so retrying it
+  // should not put it behind everything clicked since.
+  queue.unshift({
+    modelId: info.modelId ?? null,
+    versionId: info.versionId ?? null,
+    modelName: info.modelName || null,
+    at: Date.now(),
+  });
+  persistState();
+  pumpQueue();
+}
+
 // The server refuses a download whose version it already has. Worded a few
 // ways depending on the library, so match loosely.
 const ALREADY_IN_LIBRARY = /already exists|already in (the )?\w+ library/i;
@@ -711,6 +817,14 @@ async function beginDownload({ modelId, versionId, modelName }) {
       // reconcileDownloads() re-derives the outcome from the server instead.
       const info = inFlight.get(downloadId) || {};
       inFlight.delete(downloadId);
+      // Cancelled by the stuck-download watchdog: it is being retried, and the
+      // failure this request just produced is an artefact of that, not a result.
+      if (entry.suppressOutcome) {
+        lastProgress.delete(downloadId);
+        markSettled();
+        pumpQueue();
+        return;
+      }
       // Record the outcome before resolving, so a page that is about to be
       // closed still has it waiting for whoever looks next.
       recordOutcome(downloadId, {
@@ -856,6 +970,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // end-to-end inside one 2-second poll — the last one's progress was
       // always that much staler than the first's, and with the server busy the
       // whole poll could overrun its own interval.
+      const stuck = [];
       const out = (await Promise.all([...inFlight].map(async ([downloadId, info]) => {
         // A settled request is not running any more; its outcome is recorded by
         // the download's own .finally().
@@ -883,6 +998,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           persistState();
         }
 
+        // This is also the only place with fresh byte counts, so it is where a
+        // transfer that has stopped moving gets noticed.
+        if (noteProgress(downloadId, progress?.bytes_downloaded ?? null)) {
+          stuck.push(downloadId);
+        }
+
         return {
           downloadId,
           modelId: info.modelId,
@@ -896,6 +1017,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           bytesPerSecond: progress?.bytes_per_second ?? null,
         };
       }))).filter(Boolean);
+
+      // After the response, so the page is not kept waiting on a cancel round
+      // trip. Each one cancels and re-queues, which the pump then restarts.
+      if (stuck.length) setTimeout(() => stuck.forEach(retryStuckDownload), 0);
 
       return {
         success: true,
