@@ -21,6 +21,8 @@ LB_CS=/tmp/old.js node tests/poll-cadence.js      # 应当失败
 | `worker-concurrency.js` | 直接加载真实的 `background.js`（配假的 `chrome` 与 `fetch`）：一次只压一条、同版本去重 | `LB_BG` |
 | `download-queue.js` | 队列机制：排队位置、去重、先进先出、取消排队、worker 重启后队列还在 | `LB_BG` |
 | `batch-download.js` | **批量下载**：一次点 10 个，断言全程只有 1 个在传、按点击顺序发出、队列最终清空、没有重复 | `LB_BG` |
+| `download-id-validation.js` | 非整数 id 不得发到服务器（`"null"` / `"undefined"` / `""` / 乱码），两个都无效时要返回可读错误 | `LB_BG` |
+| `stuck-retry.js` | 传输停滞（完全不动 / 缓慢爬行 / 无进度记录）会自动重试，用尽重试后放弃并给出原因 | `LB_BG` |
 | `download-signals.js` | 已用时只增不减；字节数倒退时说明「已重新传输」 | `LB_CS` |
 | `list-outage.js` | ComfyUI 未启动时列表页完全静止，以及启动后自动恢复 | `LB_CS` |
 | `bubble-scans.js` | 气泡自身的 DOM 重建不得触发列表扫描 | `LB_CS` |
