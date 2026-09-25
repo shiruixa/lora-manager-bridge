@@ -366,22 +366,39 @@
   // it stays visible on every page, not just this one.
   // ═══════════════════════════════════════════════════════════════════
 
-  const activeFor = (modelId, versionId) => activeDownloads.find(
-    (d) => String(d.modelId) === String(modelId) && String(d.versionId) === String(versionId)
-  ) || null;
+  // A real id, or nothing. `String(null)` is the string "null" — which is
+  // truthy, so it sailed through every `if (versionId)` check and was sent to
+  // the server as `model_version_id=null`, which rejects it with
+  // "Invalid model_version_id: Must be an integer". Pages reached at
+  // /models/{id} with no ?modelVersionId= are exactly this case.
+  const isId = (v) => v != null && v !== '' && Number.isFinite(Number(v));
+
+  // Identifies a download for matching purposes: the digits, or '' for absent.
+  //
+  // Plain String() comparison is not enough, because absent arrives in three
+  // different spellings — `undefined` from an unset dataset, `null` through
+  // JSON, and the literal text "null" from the old String(null) bug — and
+  // "undefined" !== "null", so a running download would not match its own
+  // control and the button would stay on screen while it downloaded.
+  const idKey = (v) => (isId(v) ? String(Number(v)) : '');
+  const sameDownload = (a, b) => idKey(a.modelId) === idKey(b.modelId)
+    && idKey(a.versionId) === idKey(b.versionId);
+
+  const activeFor = (modelId, versionId) =>
+    activeDownloads.find((d) => sameDownload(d, { modelId, versionId })) || null;
 
   // Clicked, recorded, not sent yet — the worker keeps only one transfer on the
   // wire and hands it the next one when it frees up.
-  const queuedFor = (modelId, versionId) => queuedDownloads.find(
-    (q) => String(q.modelId) === String(modelId) && String(q.versionId) === String(versionId)
-  ) || null;
+  const queuedFor = (modelId, versionId) =>
+    queuedDownloads.find((q) => sameDownload(q, { modelId, versionId })) || null;
 
   function makeDownloadArea(modelId, versionId) {
     const wrap = document.createElement('span');
     wrap.className = 'lb-dl-area';
     // Read back on every poll to decide between "download" and "downloading".
-    wrap.dataset.lbModel = String(modelId);
-    wrap.dataset.lbVersion = String(versionId);
+    // Absent ids stay absent rather than becoming the text "null".
+    if (isId(modelId)) wrap.dataset.lbModel = String(modelId);
+    if (isId(versionId)) wrap.dataset.lbVersion = String(versionId);
     // Delegated from the wrap, so that re-rendering the children cannot orphan
     // the handler.
     //

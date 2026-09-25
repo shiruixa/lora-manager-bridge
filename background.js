@@ -679,10 +679,31 @@ async function libraryHasVersion(modelId, versionId) {
  * it), so it is intentionally not awaited; `download_id` is generated up front
  * so progress polling can start immediately.
  */
+/**
+ * An id, or nothing.
+ *
+ * The server parses these as integers and answers
+ * "Invalid model_version_id: Must be an integer" for anything else — and the
+ * text forms are *truthy*, so `if (versionId)` lets them straight through. That
+ * is how the strings "null" and "undefined" (from `String(null)` on a page with
+ * no `?modelVersionId=`) reached the server as a request parameter. Normalised
+ * once, here, so the dedupe key, the queue and every retry all carry clean ids.
+ */
+const asId = (v) => {
+  const s = v == null ? '' : String(v).trim();
+  // Returned as a NUMBER, not the string: ids flow into the dedupe key, the
+  // queue and the in-flight records, and flipping their type would quietly
+  // change every comparison downstream for no benefit. Stringifying is the URL
+  // builder's job.
+  return /^\d+$/.test(s) ? Number(s) : null;
+};
+
 async function handleDownloadModel({ modelId, versionId, modelName }) {
-  if (!modelId && !versionId) {
+  const mid = asId(modelId), vid = asId(versionId);
+  if (!mid && !vid) {
     return { success: false, error: '缺少 modelId / versionId' };
   }
+  modelId = mid; versionId = vid;
 
   // Already downloading this exact version? Hand back the running one and let
   // the caller attach to it, rather than starting a second copy.
@@ -783,8 +804,15 @@ async function beginDownload({ modelId, versionId, modelName }) {
     download_id: downloadId,
     use_default_paths: 'true',
   });
-  if (modelId) params.set('model_id', String(modelId));
-  if (versionId) params.set('model_version_id', String(versionId));
+  // Guarded again here even though handleDownloadModel normalises: this is the
+  // last point before the wire, and a bad value produces a server error the
+  // user cannot act on.
+  const mid = asId(modelId), vid = asId(versionId);
+  if (!mid && !vid) {
+    return { success: false, error: '无法确定这个模型的 ID，不能下载' };
+  }
+  if (mid) params.set('model_id', mid);
+  if (vid) params.set('model_version_id', vid);
 
   const url = `${baseUrl}/api/lm/download-model-get?${params}`;
 

@@ -315,6 +315,25 @@ const clickDownload = (page) => page.evaluate(() => {
   log('F 的控件（应已变成进度）:', fAfter.trim());
   check('排队中的控件变成了正在下载', !/排队中/.test(fAfter), fAfter);
 
+  console.log('\n[9] 没有 ?modelVersionId= 的模型页，不能把 "null" 当成版本号');
+  await drain();
+  const tabG = await browser.newPage();
+  // /models/{id} with no version in the query — ctx() gives versionId = null,
+  // and String(null) used to become the literal text "null" on the wire.
+  await tabG.goto(`http://civitai.com:${SITE_PORT}/models/700`, { waitUntil: 'domcontentloaded' });
+  await sleep(2500);
+
+  const gHasBtn = await tabG.evaluate(() => !!document.querySelector('.lb-dl-btn'));
+  await tabG.evaluate(() => document.querySelector('.lb-dl-btn') && document.querySelector('.lb-dl-btn').click());
+  await sleep(2000);
+  const gLast = lm.state.downloads[lm.state.downloads.length - 1];
+  console.log(`  有下载按钮: ${gHasBtn}；服务器收到 model_id=${gLast && gLast.modelId} model_version_id=${gLast && gLast.versionId}`);
+  check('这一页确实有下载按钮（否则测不到）', gHasBtn, '没有按钮');
+  check('model_id 照常发出', gLast && gLast.modelId === '700', `实际 ${gLast && gLast.modelId}`);
+  check('没有把 "null" 当成 model_version_id 发出去',
+    gLast && gLast.versionId !== 'null' && gLast.versionId !== 'undefined',
+    `实际发的是 ${JSON.stringify(gLast && gLast.versionId)}`);
+
   await browser.close();
   lm.srv.close();
   site.close();
