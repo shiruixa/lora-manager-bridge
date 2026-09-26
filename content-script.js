@@ -252,29 +252,29 @@
     return m ? +m[1] : null;
   }
 
-  // The model types LoRA Manager will actually download.
+  // Types that are definitely NOT model files, so LoRA Manager has no route for
+  // them and a download button would promise something that cannot happen.
   //
-  // Taken from the server's own rule rather than guessed at
-  // (py/services/download_manager.py:1193-1198):
+  // A deny-list rather than an allow-list, and that is the whole lesson of this
+  // change: the page's Details badge is NOT the value the server acts on. A
+  // merged checkpoint shows "Checkpoint Merge" in the UI while the API — and
+  // therefore LoRA Manager — reports `checkpoint`, so an allow-list hidden
+  // behind that badge took the download button away from a perfectly supported
+  // model (verified: /api/lm/model-versions-status?modelId=2758727 → "checkpoint").
   //
-  //     if type == "checkpoint"          → checkpoint
-  //     elif type in VALID_LORA_TYPES    → lora      (lora / locon / dora)
-  //     elif type == "textualinversion"  → embedding
-  //     else → 'Model type "X" is not supported for download'
-  //
-  // So a workflow archive, a VAE, a pose pack — none of them can be downloaded
-  // through this route, and offering a button for them promises something that
-  // cannot happen. Only used to HIDE the control; an unknown type keeps it,
-  // because a missing button breaks the feature while an extra click only
-  // costs an error message.
-  const DOWNLOADABLE_TYPES = new Set(['checkpoint', 'lora', 'locon', 'dora', 'textualinversion']);
+  // Everything else keeps its button, including VAE and pose pages: the server
+  // answers those with a readable error, and a wrong guess in this direction
+  // costs one click instead of removing a working feature.
+  const NOT_A_MODEL_TYPE = new Set(['workflows', 'aestheticgradient', 'poses']);
 
   /**
-   * The model type CivitAI shows in the version's Details panel, lowercased.
+   * The type CivitAI shows in the version's Details panel, lowercased.
    *
    * Found by the label's text, not by a hashed class: the row is a stable shape
    * (a label span next to a Mantine Badge) and "Type" is the label. Same
    * approach as the card selector's `[class*="linkOrClick"]`.
+   *
+   * Only ever used to recognise the clearly-not-a-model cases above.
    */
   function pageModelType() {
     for (const label of document.querySelectorAll('[class*="detailLabel"]')) {
@@ -359,8 +359,8 @@
     // `downloadable` in the temporal dead zone for the badge branch above it —
     // a ReferenceError that took the whole badge down, not just the new case.
     const pageType = pageModelType();
-    const downloadable = pageType == null || DOWNLOADABLE_TYPES.has(pageType);
-    if (pageType != null && !downloadable) I('page type', pageType, 'is not downloadable');
+    const downloadable = !(pageType != null && NOT_A_MODEL_TYPE.has(pageType));
+    if (!downloadable) I('no download control: page type', pageType, 'is not a model file');
 
     const versions = r.versions || [];
     const matched = r.matchedVersion;
@@ -395,7 +395,7 @@
       // in the library at all, and the wording implies it merely isn't yet.
       badgeEl.className = 'lb-inline-badge lb-inline-none';
       badgeEl.textContent = '🚫 不支持此类型 (' + pageType + ')';
-      badgeEl.title = 'LoRA Manager 只处理模型文件（checkpoint / lora / embedding）。'
+      badgeEl.title = '这不是模型文件，LoRA Manager 没有对应的存放位置。'
         + '「' + pageType + '」这类资源无法进入模型库，既不显示标记也不提供下载。';
     } else {
       badgeEl.className = 'lb-inline-badge lb-inline-none';

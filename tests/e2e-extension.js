@@ -93,7 +93,7 @@ function startSite() {
     // where the current version id comes from when the URL does not say.
     // Model 800's page has no type row and no href, for "nothing to infer".
     // Model 900's page is a WORKFLOWS archive: not downloadable at all.
-    const TYPES = { '700': 'LORA', '900': 'WORKFLOWS' };
+    const TYPES = { '700': 'LORA', '900': 'WORKFLOWS', '1000': 'Checkpoint Merge' };
     const dl = id === '700'
       ? '<a class="mantine-Button-root" href="https://civitai.red/api/download/models/7777?fileId=3228554">Download</a>'
       : '';
@@ -393,7 +393,7 @@ const clickDownload = (page) => page.evaluate(() => {
   }));
   console.log(`  Type=WORKFLOWS 的页面：下载按钮=${iState.btn}  下载区=${iState.area}`);
   console.log(`  徽章: "${iState.badge}"`);
-  console.log(`  悬停说明含「不支持」: ${/不支持/.test(iState.title)}`);
+  console.log(`  悬停说明含「无法进入模型库」: ${/无法进入模型库/.test(iState.title)}`);
   check('没有下载按钮', !iState.btn, '按钮仍然出现');
   check('没有下载控件容器', !iState.area, '控件容器仍然出现');
   check('徽章说「不支持此类型」，而不是谎称「不在库中」',
@@ -406,6 +406,22 @@ const clickDownload = (page) => page.evaluate(() => {
   await sleep(2500);
   const jHasBtn = await tabJ.evaluate(() => !!document.querySelector('.lb-dl-btn'));
   check('可下载的类型（LORA / 无类型行）仍然有按钮', jHasBtn, '按钮被误删了');
+
+  console.log('\n[12] 页面上写「Checkpoint Merge」的模型必须照常有按钮');
+  // The UI badge says "Checkpoint Merge" while CivitAI's API — and therefore
+  // LoRA Manager — reports `checkpoint`. Verified against the server:
+  // /api/lm/model-versions-status?modelId=2758727 → "checkpoint".
+  // Gating on the UI text took the button away from a supported model.
+  const tabK = await browser.newPage();
+  await tabK.goto(`http://civitai.com:${SITE_PORT}/models/1000?modelVersionId=1000000`, { waitUntil: 'domcontentloaded' });
+  await sleep(2500);
+  const kState = await tabK.evaluate(() => ({
+    btn: !!document.querySelector('.lb-dl-btn'),
+    badge: (document.querySelector('.lb-inline-badge') || {}).textContent || '',
+  }));
+  console.log(`  Type=Checkpoint Merge → 下载按钮=${kState.btn}  徽章="${kState.badge}"`);
+  check('合并 checkpoint 仍然有下载按钮', kState.btn, '按钮被错误地隐藏了');
+  check('徽章也不说「不支持」', !/不支持/.test(kState.badge), kState.badge);
 
   await browser.close();
   lm.srv.close();
