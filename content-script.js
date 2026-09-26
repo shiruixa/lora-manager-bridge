@@ -354,6 +354,14 @@
       return;
     }
 
+    // Read once here, ABOVE everything that branches on it. It was first written
+    // beside the download control further down, which put `type` and
+    // `downloadable` in the temporal dead zone for the badge branch above it —
+    // a ReferenceError that took the whole badge down, not just the new case.
+    const pageType = pageModelType();
+    const downloadable = pageType == null || DOWNLOADABLE_TYPES.has(pageType);
+    if (pageType != null && !downloadable) I('page type', pageType, 'is not downloadable');
+
     const versions = r.versions || [];
     const matched = r.matchedVersion;
     const hasAny = r.hasAnyVersion || versions.length > 0;
@@ -382,6 +390,13 @@
       badgeEl.className = 'lb-inline-badge lb-inline-partial';
       badgeEl.textContent = '⚠️ 此版本未下载 (库中有 ' + versions.length + ' 个其他版本)';
       badgeEl.title = tooltip(versions);
+    } else if (!downloadable) {
+      // "Not in the library" would be misleading: a workflow archive cannot be
+      // in the library at all, and the wording implies it merely isn't yet.
+      badgeEl.className = 'lb-inline-badge lb-inline-none';
+      badgeEl.textContent = '🚫 不支持此类型 (' + pageType + ')';
+      badgeEl.title = 'LoRA Manager 只处理模型文件（checkpoint / lora / embedding）。'
+        + '「' + pageType + '」这类资源无法进入模型库，既不显示标记也不提供下载。';
     } else {
       badgeEl.className = 'lb-inline-badge lb-inline-none';
       badgeEl.textContent = '📥 此模型不在库中';
@@ -405,15 +420,9 @@
     // yet, and only for a type LoRA Manager can actually fetch. A workflow
     // archive has no route into the library, so the button would only ever
     // produce `Model type "workflows" is not supported for download`.
-    const type = pageModelType();
-    const downloadable = type == null || DOWNLOADABLE_TYPES.has(type);
-    if (type != null && !downloadable) I('no download control: type', type, 'is not downloadable');
+    // (`pageType` / `downloadable` are computed further up — see the note there.)
     if (!matched && downloadable && downloadsEnabled) {
       appendNext(makeDownloadArea(modelId, versionId));
-    } else if (!matched && !downloadable) {
-      // Say why, rather than leaving the absence unexplained.
-      badgeEl.title = (badgeEl.title ? badgeEl.title + '\n' : '') +
-        'LoRA Manager 不支持下载 ' + type + ' 类型（只支持 checkpoint / lora / embedding）';
     }
 
     // Version list — nothing to show when the library has no version of this model.

@@ -396,7 +396,9 @@ const clickDownload = (page) => page.evaluate(() => {
   console.log(`  悬停说明含「不支持」: ${/不支持/.test(iState.title)}`);
   check('没有下载按钮', !iState.btn, '按钮仍然出现');
   check('没有下载控件容器', !iState.area, '控件容器仍然出现');
-  check('徽章上说明了原因', /不支持/.test(iState.title), iState.title.slice(0, 80));
+  check('徽章说「不支持此类型」，而不是谎称「不在库中」',
+    /不支持此类型/.test(iState.badge) && !/不在库中/.test(iState.badge), iState.badge);
+  check('悬停里解释了原因', /无法进入模型库/.test(iState.title), iState.title.slice(0, 80));
 
   // And a LORA page still gets one — the guard must not hide it for everything.
   const tabJ = await browser.newPage();
