@@ -91,9 +91,17 @@ function startSite() {
     const id = (u.pathname.match(/\/models\/(\d+)/) || [])[1] || '0';
     // Model 700's page carries the download href the real site has — that is
     // where the current version id comes from when the URL does not say.
-    // Model 800's page has none, for the case where nothing can be inferred.
+    // Model 800's page has no type row and no href, for "nothing to infer".
+    // Model 900's page is a WORKFLOWS archive: not downloadable at all.
+    const TYPES = { '700': 'LORA', '900': 'WORKFLOWS' };
     const dl = id === '700'
       ? '<a class="mantine-Button-root" href="https://civitai.red/api/download/models/7777?fileId=3228554">Download</a>'
+      : '';
+    const typeRow = TYPES[id]
+      ? `<div class="ModelVersionDetails-module-scss-module__x__detailRow">
+           <span class="ModelVersionDetails-module-scss-module__x__detailLabel">Type</span>
+           <div class="mantine-Group-root"><div class="mantine-Badge-root">${TYPES[id]}</div></div>
+         </div>`
       : '';
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Model ${id} | Civitai</title></head>
@@ -103,6 +111,7 @@ function startSite() {
       <h1 class="mantine-Title-root">Model ${id}</h1>
     </div>
     <div class="ModelVersionList"><button>version one</button><button>version two</button></div>
+    <div class="ModelVersionDetails">${typeRow}</div>
     ${dl}
   </div>
 </body></html>`);
@@ -371,6 +380,30 @@ const clickDownload = (page) => page.evaluate(() => {
   check('没有把 "null" 当成 model_version_id 发出去',
     hLast && hLast.versionId !== 'null' && hLast.versionId !== 'undefined',
     `实际发的是 ${JSON.stringify(hLast && hLast.versionId)}`);
+
+  console.log('\n[11] 不可下载的类型（workflow / VAE / pose…）不该出现下载控件');
+  const tabI = await browser.newPage();
+  await tabI.goto(`http://civitai.com:${SITE_PORT}/models/900?modelVersionId=900000`, { waitUntil: 'domcontentloaded' });
+  await sleep(2500);
+  const iState = await tabI.evaluate(() => ({
+    btn: !!document.querySelector('.lb-dl-btn'),
+    area: !!document.querySelector('.lb-dl-area'),
+    badge: (document.querySelector('.lb-inline-badge') || {}).textContent || '',
+    title: (document.querySelector('.lb-inline-badge') || {}).title || '',
+  }));
+  console.log(`  Type=WORKFLOWS 的页面：下载按钮=${iState.btn}  下载区=${iState.area}`);
+  console.log(`  徽章: "${iState.badge}"`);
+  console.log(`  悬停说明含「不支持」: ${/不支持/.test(iState.title)}`);
+  check('没有下载按钮', !iState.btn, '按钮仍然出现');
+  check('没有下载控件容器', !iState.area, '控件容器仍然出现');
+  check('徽章上说明了原因', /不支持/.test(iState.title), iState.title.slice(0, 80));
+
+  // And a LORA page still gets one — the guard must not hide it for everything.
+  const tabJ = await browser.newPage();
+  await tabJ.goto(`http://civitai.com:${SITE_PORT}/models/300?modelVersionId=300000`, { waitUntil: 'domcontentloaded' });
+  await sleep(2500);
+  const jHasBtn = await tabJ.evaluate(() => !!document.querySelector('.lb-dl-btn'));
+  check('可下载的类型（LORA / 无类型行）仍然有按钮', jHasBtn, '按钮被误删了');
 
   await browser.close();
   lm.srv.close();

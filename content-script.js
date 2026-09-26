@@ -252,6 +252,41 @@
     return m ? +m[1] : null;
   }
 
+  // The model types LoRA Manager will actually download.
+  //
+  // Taken from the server's own rule rather than guessed at
+  // (py/services/download_manager.py:1193-1198):
+  //
+  //     if type == "checkpoint"          → checkpoint
+  //     elif type in VALID_LORA_TYPES    → lora      (lora / locon / dora)
+  //     elif type == "textualinversion"  → embedding
+  //     else → 'Model type "X" is not supported for download'
+  //
+  // So a workflow archive, a VAE, a pose pack — none of them can be downloaded
+  // through this route, and offering a button for them promises something that
+  // cannot happen. Only used to HIDE the control; an unknown type keeps it,
+  // because a missing button breaks the feature while an extra click only
+  // costs an error message.
+  const DOWNLOADABLE_TYPES = new Set(['checkpoint', 'lora', 'locon', 'dora', 'textualinversion']);
+
+  /**
+   * The model type CivitAI shows in the version's Details panel, lowercased.
+   *
+   * Found by the label's text, not by a hashed class: the row is a stable shape
+   * (a label span next to a Mantine Badge) and "Type" is the label. Same
+   * approach as the card selector's `[class*="linkOrClick"]`.
+   */
+  function pageModelType() {
+    for (const label of document.querySelectorAll('[class*="detailLabel"]')) {
+      if (label.textContent.trim().toLowerCase() !== 'type') continue;
+      const row = label.parentElement;
+      const badge = row && row.querySelector('.mantine-Badge-root');
+      const text = badge ? badge.textContent.trim().toLowerCase() : '';
+      if (text) return text;
+    }
+    return null;
+  }
+
   async function updateDetailBadge() {
     const myReqId = ++detailReqId;
 
@@ -366,9 +401,19 @@
       after = el;
     };
 
-    // Download control — only when this exact version is not in the library yet.
-    if (!matched && downloadsEnabled) {
+    // Download control — only when this exact version is not in the library
+    // yet, and only for a type LoRA Manager can actually fetch. A workflow
+    // archive has no route into the library, so the button would only ever
+    // produce `Model type "workflows" is not supported for download`.
+    const type = pageModelType();
+    const downloadable = type == null || DOWNLOADABLE_TYPES.has(type);
+    if (type != null && !downloadable) I('no download control: type', type, 'is not downloadable');
+    if (!matched && downloadable && downloadsEnabled) {
       appendNext(makeDownloadArea(modelId, versionId));
+    } else if (!matched && !downloadable) {
+      // Say why, rather than leaving the absence unexplained.
+      badgeEl.title = (badgeEl.title ? badgeEl.title + '\n' : '') +
+        'LoRA Manager 不支持下载 ' + type + ' 类型（只支持 checkpoint / lora / embedding）';
     }
 
     // Version list — nothing to show when the library has no version of this model.
