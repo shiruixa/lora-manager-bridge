@@ -143,6 +143,22 @@ const res = (body, status = 200) => ({
 
   function log_(s) { console.log(s); }
 
+  console.log('\n[4] 用户按 ✕ 要删掉未完成的部分（和自动重试相反）');
+  // Two callers, two intents: the retry must preserve (it is about to re-request
+  // the same file), the ✕ must discard (the user stopped it on purpose).
+  cancels.length = 0;
+  skips.length = 0;
+  const fresh = await send('DOWNLOAD_MODEL', { modelId: 777, versionId: 7770, modelName: 'User cancels this' });
+  await sleep(200);
+  const freshId = [...held.keys()][0];
+  progressFor.set(freshId, 900000);
+  await send('CANCEL_DOWNLOAD', { downloadId: freshId });
+  await sleep(300);
+  console.log(`  用户取消 → cancel ${cancels.length} 次 / skip ${skips.length} 次`);
+  check('用户取消走 cancel（删除 .part）',
+    cancels.includes(freshId) && !skips.includes(freshId),
+    `cancel ${JSON.stringify(cancels)} / skip ${JSON.stringify(skips)}`);
+
   console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'));
   process.exit(failures === 0 ? 0 : 1);
 })();

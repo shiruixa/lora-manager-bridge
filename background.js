@@ -924,22 +924,28 @@ async function beginDownload({ modelId, versionId, modelName }) {
  *   skip    "keeps partial files (.part / .aria2) on disk so that a subsequent
  *            download-model-get request for the same save path can auto-resume"
  *
- * This was calling cancel, so the stuck-download retry was deleting the bytes
- * it was about to resume from and starting again from zero — the exact opposite
- * of what it was added for, and of what the UI told the user. Measured on a
- * real stall: the `.part` file vanished at the moment of the cancel.
+ * Two callers, two different intents, so the choice is theirs to pass:
  *
- * Skip is also the honest choice for the ✕ in the bubble, whose message
- * promises the partial file is kept.
+ *   retryStuckDownload  → preserve (skip). It is about to re-request this very
+ *                         file; deleting the bytes would make every retry start
+ *                         from zero. Nothing the user chose.
+ *   CANCEL_DOWNLOAD (✕) → discard (cancel). The user pressed the button to stop
+ *                         it — "I don't want this" is the plain reading, and a
+ *                         half-finished file they did not ask to keep is just
+ *                         disk usage.
+ *
+ * Getting this the wrong way round in either direction is visible: a retry that
+ * restarts from zero, or a ✕ that quietly leaves a gigabyte behind.
  */
-async function handleCancelDownload({ downloadId }) {
+async function handleCancelDownload({ downloadId, discard = false }) {
   if (!downloadId) return { success: false, error: '缺少 downloadId' };
+  const endpoint = discard ? '/api/lm/cancel-download-get' : '/api/lm/skip-download';
   try {
-    const result = await queryEndpoint('/api/lm/skip-download', { download_id: downloadId });
+    const result = await queryEndpoint(endpoint, { download_id: downloadId });
     if (result?.success === false) {
       return { success: false, error: result.error || '取消失败' };
     }
-    return { success: true };
+    return { success: true, discarded: discard };
   } catch (error) {
     return { success: false, error: String((error && error.message) || error) };
   }
@@ -1015,7 +1021,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'CANCEL_DOWNLOAD') {
-    respond(handleCancelDownload(message.payload), sendResponse);
+    // The user's ✕: stop it and drop the partial. (The retry path calls the
+    // same helper with discard left off, so it keeps its bytes.)
+    respond(handleCancelDownload({ ...(message.payload || {}), discard: true }), sendResponse);
     return true;
   }
 
